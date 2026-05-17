@@ -4,8 +4,8 @@ Este documento descreve o componente MazeViewer e como ele pode ser conectado ao
 
 ## Arquitetura geral
 
-- MazeViewer renderiza o grid do labirinto e o estado do robo em tempo real.
-- A fonte de dados atual e um mock local (createMockTelemetry).
+- MazeViewer.tsx renderiza o grid do labirinto e o estado do robo em tempo real.
+- A fonte de dados atual e um mock local (mockTelemetry.ts).
 - O grid e criado por createMaze e atualizado por markVisited e markWall.
 
 Arquivos relacionados:

@@ -10,10 +10,8 @@ interface MockTelemetryOptions {
   onFinish: () => void;
 }
 
-// Ordem das direcoes para facilitar giros.
 const directions: Direction[] = ["north", "east", "south", "west"];
 
-// Mantem a direcao com maior probabilidade e aplica giros leves.
 const pickDirection = (current: Direction): Direction => {
   const index = directions.indexOf(current);
   const choice = Math.random();
@@ -29,21 +27,49 @@ const pickDirection = (current: Direction): Direction => {
   return directions[(index + directions.length - 1) % directions.length];
 };
 
+const getStepLimit = (size: number) => {
+  if (size === 4) {
+    return 8;
+  }
+  if (size === 8) {
+    return 16;
+  }
+  if (size === 16) {
+    return 32;
+  }
+  return Math.min(size, 16);
+};
+
 // Fabrica o simulador com ciclo de atualizacoes periodicas.
 export const createMockTelemetry = (options: MockTelemetryOptions) => {
   let timer: number | null = null;
   let steps = 0;
   let currentDirection: Direction = "east";
   let currentPosition = { row: 0, col: 0 };
+  const stepLimit = getStepLimit(options.size);
 
-  // Avanca um passo ou gera colisao com parede.
+  // Avanca passos aleatorios e encerra no limite definido por tamanho.
   const tick = () => {
+    if (steps >= stepLimit || steps >= options.maxSteps) {
+      options.onFinish();
+      return;
+    }
+
     const direction = pickDirection(currentDirection);
     const nextPosition = stepFromPosition(currentPosition, direction);
     const boundaryHit = !isInsideMaze(nextPosition, options.size);
-    const randomWallHit = Math.random() < 0.2;
 
-    if (boundaryHit || randomWallHit) {
+    steps += 1;
+    if (direction !== currentDirection) {
+      options.onTelemetry({
+        position: currentPosition,
+        direction,
+        moved: false,
+        hitWall: true,
+        wallDir: direction,
+      });
+    }
+    if (boundaryHit) {
       currentDirection = direction;
       options.onTelemetry({
         position: currentPosition,
@@ -55,7 +81,6 @@ export const createMockTelemetry = (options: MockTelemetryOptions) => {
       return;
     }
 
-    steps += 1;
     currentDirection = direction;
     currentPosition = nextPosition;
     options.onTelemetry({
@@ -64,10 +89,6 @@ export const createMockTelemetry = (options: MockTelemetryOptions) => {
       moved: true,
       hitWall: false,
     });
-
-    if (steps >= options.maxSteps) {
-      options.onFinish();
-    }
   };
 
   return {
