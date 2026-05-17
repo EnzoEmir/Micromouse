@@ -2,11 +2,16 @@
 - [**Cronograma Geral**](pages/docs/cronograma.md)
 - [**EAP Geral**](pages/docs/eap_geral.md)
 - **Núcleos**
-  - [*1. Eletrônica*](pages/docs/nucleos/eletronica.md)
+  - *1. Eletrônica*
+    - [PCB](/pages/docs/software/pcb.md)
+    - [Backlog do Produto](/pages/docs/eletronica/embarcado.md)
   - [*2. Energia*](pages/docs/nucleos/energia.md)
   - *3. Estrutura*
     - [Métodos de Transmissão](mec/estudo_metodos_transmissao.md)
-    - [Características da Roda](mec/esboco_caracteristicas_desejaveis_rodas.md)
+    - Rodas
+      - [Características da Roda](mec/caracteristicas_roda.md)
+      - [Esboço de Características Desejáveis](mec/esboco_caracteristicas_desejaveis_rodas.md)
   - *4. Software*
-    - [Arquitetura de Software](docs/software/arquitetura-software.md)
+    - [Arquitetura de Software](/pages/docs/software/arquitetura-software.md)
+    - [Backlog do Produto](/pages/docs/software/backlog-produto.md)
     - [Roteiro de Testes Funcionais](/pages/docs/software/roteiro-testes-funcionais.md)
