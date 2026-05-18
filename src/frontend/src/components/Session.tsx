@@ -1,6 +1,10 @@
 import { useTelemetria } from '../hooks/useTelemetria';
 
-export default function SessionManager() {
+interface SessionManagerProps {
+    onNavigate?: () => void;
+}
+
+export default function SessionManager({ onNavigate }: SessionManagerProps) {
     const { indicadores, configSessao, conectado, erro } = useTelemetria();
 
     // Determina se a sessão de monitoramento já foi iniciada
@@ -57,7 +61,7 @@ export default function SessionManager() {
 
                         {/* Ícone de Sucesso */}
                         <div className="w-20 h-20 bg-emerald-50 border border-emerald-100 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm">
-                            <span className="text-3xl">🎉</span>
+                            <span className="text-3xl">🤖</span>
                         </div>
 
                         <h2 className="text-2xl font-bold tracking-tight text-slate-900 mb-2">
@@ -90,7 +94,7 @@ export default function SessionManager() {
 
                         {/* Botão de Redirecionamento */}
                         <button
-                            onClick={() => alert("Redirecionando para a tela de monitoramento...")}
+                            onClick={onNavigate}
                             className="w-full bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 text-white font-semibold py-3.5 px-6 rounded-2xl shadow-lg shadow-emerald-500/20 hover:shadow-emerald-500/30 transition-all duration-200 cursor-pointer"
                         >
                             Ir para o Monitoramento
