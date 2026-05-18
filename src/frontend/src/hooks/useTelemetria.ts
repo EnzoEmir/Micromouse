@@ -9,14 +9,20 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { ConfigSessao, IndicadoresDesempenho, PacoteTelemetria } from "../types/telemetria";
+import type {
+  ConfigSessao,
+  IndicadoresDesempenho,
+  PacoteTelemetria,
+} from "../types/telemetria";
 import { WS_TELEMETRIA_URL } from "../services/telemetria";
 
 /** Estado inicial dos indicadores (espelha criar_estado_inicial do backend). */
 const ESTADO_INICIAL: IndicadoresDesempenho = {
   id_corrida_banco: null,
   sessao_hardware_id: null,
+  bateria_inicial: null,
   bateria_atual: null,
+  bateria_final: null,
   velocidade_media: null,
   tempo_decorrido_ms: 0,
   tempo_final_ms: null,
@@ -51,8 +57,9 @@ export interface UseTelemetriaReturn {
 export function useTelemetria(): UseTelemetriaReturn {
   const [indicadores, setIndicadores] =
     useState<IndicadoresDesempenho>(ESTADO_INICIAL);
-  const [configSessao, setConfigSessao] =
-    useState<ConfigSessao>(CONFIG_SESSAO_INICIAL);
+  const [configSessao, setConfigSessao] = useState<ConfigSessao>(
+    CONFIG_SESSAO_INICIAL,
+  );
   const [conectado, setConectado] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
@@ -124,7 +131,9 @@ export function useTelemetria(): UseTelemetriaReturn {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(pacote));
     } else {
-      console.warn("[useTelemetria] WebSocket não conectado, pacote descartado.");
+      console.warn(
+        "[useTelemetria] WebSocket não conectado, pacote descartado.",
+      );
     }
   }, []);
 

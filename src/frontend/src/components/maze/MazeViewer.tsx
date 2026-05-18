@@ -7,14 +7,6 @@ const DEFAULT_GRID_SIZE = 8;
 const GRID_SIZES = [16, 8, 4] as const;
 const MAX_STEPS = 512;
 
-// Setas para indicar direcao atual do robo.
-const directionArrow: Record<Direction, string> = {
-  north: "▲",
-  east: "▶",
-  south: "▼",
-  west: "◀",
-};
-
 const positionsEqual = (a: Position, b: Position) =>
   a.row === b.row && a.col === b.col;
 
@@ -53,7 +45,6 @@ export default function MazeViewer() {
   const displayMaze = snapshot ? snapshot.maze : maze;
   const displayPath = snapshot ? snapshot.path : path;
   const displayPosition = snapshot ? snapshot.endPosition : position;
-  const displayDirection = snapshot ? snapshot.endDirection : direction;
   const displayGridSize = snapshot ? snapshot.gridSize : gridSize;
   const displayGridDimension =
     displayGridSize === 16
@@ -61,6 +52,7 @@ export default function MazeViewer() {
       : displayGridSize === 8
         ? "min(70vmin, 520px)"
         : "min(60vmin, 360px)";
+  const wallShadowColor = "rgb(9 9 11)";
   const origin = { row: 0, col: 0 };
   const pathPoints = [origin, ...displayPath];
   if (!positionsEqual(pathPoints[pathPoints.length - 1], displayPosition)) {
@@ -192,28 +184,40 @@ export default function MazeViewer() {
   }, [sessionStatus, gridSize]);
 
   return (
-    <section className="maze-shell">
-      <header className="maze-header">
+    <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
+      <header className="flex flex-col gap-4 border-b border-zinc-100 pb-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <p className="eyebrow">Micromouse Control Room</p>
-          <h1>Mapa de Navegacao em Tempo Real</h1>
-          <p className="subhead">
+          <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+            Labirinto
+          </p>
+          <h2 className="text-xl font-semibold text-zinc-950">
+            Mapa de navegacao em tempo real
+          </h2>
+          <p className="mt-1 text-sm text-zinc-500">
             Sinal vivo da corrida com rastreio de paredes, celulas visitadas e
             historico de rotas.
           </p>
         </div>
-        <div className="controls">
-          <button type="button" className="btn primary" onClick={startSession}>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="rounded-lg bg-zinc-950 px-3 py-2 text-xs font-semibold text-white transition hover:bg-zinc-800"
+            onClick={startSession}
+          >
             Simular corrida
           </button>
-          <button type="button" className="btn" onClick={openHistory}>
+          <button
+            type="button"
+            className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-50"
+            onClick={openHistory}
+          >
             Historico
           </button>
           {GRID_SIZES.map((size) => (
             <button
               key={size}
               type="button"
-              className="btn"
+              className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-50"
               onClick={() => updateGridSize(size)}
             >
               {size}x{size}
@@ -222,105 +226,170 @@ export default function MazeViewer() {
         </div>
       </header>
 
-      <div className="maze-layout">
-        <div
-          className="maze-grid"
-          style={{
-            gridTemplateColumns: `repeat(${displayGridSize}, minmax(0, 1fr))`,
-            width: displayGridDimension,
-            height: displayGridDimension,
-          }}
-        >
-          <svg
-            className="maze-path"
-            viewBox={`0 0 ${displayGridSize} ${displayGridSize}`}
-            aria-hidden="true"
-          >
-            <polyline points={pathPointsString} />
-          </svg>
-          {displayMaze.map((row, rowIndex) =>
-            row.map((cell, colIndex) => {
-              const cellPosition = { row: rowIndex, col: colIndex };
-              const isCurrent = positionsEqual(cellPosition, displayPosition);
-              const isOnPath = displayPath.some((step) =>
-                positionsEqual(step, cellPosition),
-              );
-              const classes = [
-                "maze-cell",
-                cell.visited ? "visited" : "",
-                isOnPath ? "path" : "",
-                isCurrent ? "current" : "",
-                cell.walls.north ? "wall-n" : "",
-                cell.walls.south ? "wall-s" : "",
-                cell.walls.east ? "wall-e" : "",
-                cell.walls.west ? "wall-w" : "",
-              ]
-                .filter(Boolean)
-                .join(" ");
+      <div className="mt-6 flex flex-col gap-6 lg:flex-row">
+        <div className="flex-1">
+          <div className="relative rounded-2xl border border-zinc-200 bg-zinc-50 p-3">
+            <div
+              className="relative grid"
+              style={{
+                gridTemplateColumns: `repeat(${displayGridSize}, minmax(0, 1fr))`,
+                width: displayGridDimension,
+                height: displayGridDimension,
+              }}
+            >
+              {displayMaze.map((row, rowIndex) =>
+                row.map((cell, colIndex) => {
+                  const cellPosition = { row: rowIndex, col: colIndex };
+                  const isCurrent = positionsEqual(
+                    cellPosition,
+                    displayPosition,
+                  );
+                  const isOnPath = displayPath.some((step) =>
+                    positionsEqual(step, cellPosition),
+                  );
+                  const backgroundColor = isCurrent
+                    ? "rgb(125 211 252)"
+                    : cell.visited
+                      ? "rgb(186 230 253)"
+                      : isOnPath
+                        ? "rgb(224 242 254)"
+                        : "rgb(255 255 255)";
+                  const wallShadows = [
+                    cell.walls.north
+                      ? `inset 0 2px 0 0 ${wallShadowColor}`
+                      : null,
+                    cell.walls.south
+                      ? `inset 0 -2px 0 0 ${wallShadowColor}`
+                      : null,
+                    cell.walls.east
+                      ? `inset -2px 0 0 0 ${wallShadowColor}`
+                      : null,
+                    cell.walls.west
+                      ? `inset 2px 0 0 0 ${wallShadowColor}`
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(", ");
+                  const classes = [
+                    "relative aspect-square border border-zinc-200",
+                  ]
+                    .filter(Boolean)
+                    .join(" ");
 
-              return (
-                <div key={`${rowIndex}-${colIndex}`} className={classes}>
-                  {isCurrent && (
-                    <span className="mouse">
-                      <span className="mouse-core" />
-                      <span className="mouse-arrow">
-                        {directionArrow[displayDirection]}
-                      </span>
-                    </span>
-                  )}
-                </div>
-              );
-            }),
-          )}
+                  return (
+                    <div
+                      key={`${rowIndex}-${colIndex}`}
+                      className={`z-20 ${classes}`}
+                      style={{
+                        backgroundColor,
+                        boxShadow: wallShadows || undefined,
+                      }}
+                    />
+                  );
+                }),
+              )}
+              <svg
+                className="pointer-events-none absolute inset-0 z-20 h-full w-full"
+                viewBox={`0 0 ${displayGridSize} ${displayGridSize}`}
+                aria-hidden="true"
+              >
+                <polyline
+                  points={pathPointsString}
+                  fill="none"
+                  stroke="rgb(37 99 235)"
+                  strokeWidth="0.04"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              <div
+                className="pointer-events-none absolute z-30 h-3 w-3 rounded-full bg-black"
+                style={{
+                  left: `${((displayPosition.col + 0.5) / displayGridSize) * 100}%`,
+                  top: `${((displayPosition.row + 0.5) / displayGridSize) * 100}%`,
+                  transform: "translate(-50%, -50%)",
+                }}
+              />
+            </div>
+          </div>
         </div>
 
-        <aside className="maze-panel">
-          <div className="panel-card">
-            <h2>Status da Corrida</h2>
-            <p className="status">Sessao: {sessionStatus}</p>
-            <p className="status">
-              Posicao: ({displayPosition.row}, {displayPosition.col})
+        <aside className="w-full lg:w-72">
+          <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+              Status da corrida
             </p>
+            <div className="mt-3 space-y-2 text-sm text-zinc-700">
+              <p className="flex items-center justify-between">
+                <span>Sessao</span>
+                <span className="font-semibold text-zinc-900">
+                  {sessionStatus}
+                </span>
+              </p>
+              <p className="flex items-center justify-between">
+                <span>Posicao</span>
+                <span className="font-semibold text-zinc-900">
+                  ({displayPosition.row}, {displayPosition.col})
+                </span>
+              </p>
+              <p className="flex items-center justify-between">
+                <span>Grade</span>
+                <span className="font-semibold text-zinc-900">
+                  {displayGridSize}x{displayGridSize}
+                </span>
+              </p>
+            </div>
           </div>
         </aside>
       </div>
+
       {isHistoryOpen && (
-        <div className="history-backdrop" role="dialog" aria-modal="true">
-          <div className="history-modal">
-            <div className="history-modal-header">
-              <h2>Historico de Corridas</h2>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/40 p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl">
+            <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+              <h2 className="text-lg font-semibold text-zinc-900">
+                Historico de Corridas
+              </h2>
               <button
                 type="button"
-                className="btn ghost"
+                className="rounded-lg border border-zinc-200 px-3 py-1.5 text-sm text-zinc-600 transition hover:bg-zinc-50"
                 onClick={() => setIsHistoryOpen(false)}
               >
                 Fechar
               </button>
             </div>
-            <div className="history-list">
+            <div className="mt-4 space-y-2">
               {history.map((run, index) => (
                 <button
                   key={`history-${index}`}
                   type="button"
-                  className="history-item"
+                  className="flex w-full items-center justify-between rounded-xl border border-zinc-200 px-4 py-3 text-left text-sm text-zinc-700 transition hover:border-zinc-300 hover:bg-zinc-50"
                   onClick={() => selectHistory(index)}
                 >
                   <div>
-                    <span className="history-title">Corrida {index + 1}</span>
-                    <span className="history-meta">
+                    <span className="block text-sm font-semibold text-zinc-900">
+                      Corrida {index + 1}
+                    </span>
+                    <span className="text-xs text-zinc-500">
                       {run.gridSize}x{run.gridSize} · {run.path.length} passos
                     </span>
                   </div>
-                  <span className="history-arrow">→</span>
+                  <span className="text-lg text-zinc-400">→</span>
                 </button>
               ))}
+              {history.length === 0 && (
+                <p className="rounded-xl border border-dashed border-zinc-200 px-4 py-6 text-center text-sm text-zinc-500">
+                  Nenhuma corrida registrada ainda.
+                </p>
+              )}
             </div>
-            {history.length === 0 && (
-              <p className="history-empty">Nenhuma corrida registrada ainda.</p>
-            )}
           </div>
         </div>
       )}
-    </section>
+    </div>
   );
 }
