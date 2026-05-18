@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.database import get_session
 from app.config import settings
+from app.routers.telemetria import estados_ativos
 
 import subprocess
 import time
@@ -74,3 +75,11 @@ def client_fixture(session: Session):
     with TestClient(app) as client:
         yield client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def limpar_estados_ativos():
+    """Isola o estado em memória da telemetria entre testes."""
+    estados_ativos.clear()
+    yield
+    estados_ativos.clear()

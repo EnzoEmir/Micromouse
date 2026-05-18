@@ -9,6 +9,7 @@ from ..services.telemetria import atualizar_indicadores, criar_estado_inicial, i
 from ..schemas.telemetria import IndicadoresDesempenho, TipoPacote
 from ..services.websocket_manager import manager
 from ..models.corrida import Corrida
+from ..models.evento import Evento
 from ..models.labirinto import Labirinto
 from ..models.enums import StatusCorrida, TipoLabirinto
 from ..schemas.telemetria import PacoteInicial, PacoteMovimentacao, PacoteFinal
@@ -69,6 +70,8 @@ async def receber_pacote_telemetria(
     # Processa os indicadores puros
     novo_estado = atualizar_indicadores(estado_atual, pacote)
 
+    commit_realizado = False
+
     # Se for pacote inicial, resolver a dimensão e criar no banco se necessário
     tipo_lab = None
     if tipo == TipoPacote.INICIAL and novo_estado.id_corrida_banco is None:
@@ -96,12 +99,15 @@ async def receber_pacote_telemetria(
             bateria_inicial=pacote.get("bateria", 100.0)
         )
         session.add(corrida)
-        session.commit()
-        session.refresh(corrida)
+        session.flush()
 
         # Atualiza o estado com o ID real do banco
         novo_estado.id_corrida_banco = corrida.id_corrida
         novo_estado.sessao_hardware_id = corrida.sessao_hardware_id
+        _persistir_novos_alertas(session, estado_atual, novo_estado)
+        session.commit()
+        session.refresh(corrida)
+        commit_realizado = True
     # Se for pacote final, atualizar o banco de dados
     if tipo == TipoPacote.FINAL and novo_estado.id_corrida_banco is not None:
         corrida = session.get(Corrida, novo_estado.id_corrida_banco)
@@ -112,7 +118,12 @@ async def receber_pacote_telemetria(
             corrida.velocidade_media = novo_estado.velocidade_media
             corrida.desafio_cumprido = novo_estado.sucesso
             session.add(corrida)
+            _persistir_novos_alertas(session, estado_atual, novo_estado)
             session.commit()
+            commit_realizado = True
+
+    if not commit_realizado and _persistir_novos_alertas(session, estado_atual, novo_estado):
+        session.commit()
 
     # Salva o novo estado na memória
     estados_ativos[sessao_hardware_id] = novo_estado
@@ -163,3 +174,29 @@ def _estado_to_dict(estado: IndicadoresDesempenho) -> dict:
             for alerta in estado.log_alertas
         ],
     }
+
+
+def _persistir_novos_alertas(
+    session: Session,
+    estado_anterior: IndicadoresDesempenho,
+    estado_atual: IndicadoresDesempenho,
+) -> bool:
+    """Persiste apenas os alertas emitidos no processamento do pacote atual."""
+    if estado_atual.id_corrida_banco is None:
+        return False
+
+    novos_alertas = estado_atual.log_alertas[len(estado_anterior.log_alertas):]
+    if not novos_alertas:
+        return False
+
+    for alerta in novos_alertas:
+        session.add(
+            Evento(
+                id_corrida=estado_atual.id_corrida_banco,
+                tipo_evento=alerta.tipo.value,
+                descricao=alerta.mensagem,
+                timestamp_ms=alerta.timestamp_ms,
+            )
+        )
+
+    return True
