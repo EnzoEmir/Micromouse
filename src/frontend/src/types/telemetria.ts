@@ -69,3 +69,8 @@ export interface IndicadoresDesempenho {
   alerta_bateria_critica: boolean;
   alerta_dado_invalido: boolean;
 }
+
+export interface ConfigSessao {
+  dimensao: number | string | null;
+  tentativa: number | string | null;
+}

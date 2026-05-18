@@ -1,11 +1,21 @@
+import { useState } from 'react';
 import { TelemetriaPage } from './pages/TelemetriaPage';
 import MazeViewer from './components/maze/MazeViewer';
+import Session from './components/Session';
 
 function App() {
+  const [currentView, setCurrentView] = useState<'session' | 'telemetria'>('session');
+
   return (
     <main className="app">
-      <TelemetriaPage />
-      <MazeViewer />
+      {currentView === 'session' ? (
+        <Session onNavigate={() => setCurrentView('telemetria')} />
+      ) : (
+        <>
+          <TelemetriaPage />
+          <MazeViewer />
+        </>
+      )}
     </main>
   );
 }
