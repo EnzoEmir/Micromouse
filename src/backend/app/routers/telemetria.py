@@ -156,5 +156,10 @@ def _estado_to_dict(estado: IndicadoresDesempenho) -> dict:
         "sucesso": estado.sucesso,
         "ultimo_timestamp_ms": estado.ultimo_timestamp_ms,
         "alerta_bateria_critica": estado.alerta_bateria_critica,
+        "alerta_possivel_parada_inesperada": estado.alerta_possivel_parada_inesperada,
         "alerta_dado_invalido": estado.alerta_dado_invalido,
+        "log_alertas": [
+            alerta.model_dump(mode="json")
+            for alerta in estado.log_alertas
+        ],
     }
