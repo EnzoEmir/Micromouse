@@ -16,7 +16,9 @@ import { WS_TELEMETRIA_URL } from "../services/telemetria";
 const ESTADO_INICIAL: IndicadoresDesempenho = {
   id_corrida_banco: null,
   sessao_hardware_id: null,
+  bateria_inicial: null,
   bateria_atual: null,
+  bateria_final: null,
   velocidade_media: null,
   tempo_decorrido_ms: 0,
   tempo_final_ms: null,
