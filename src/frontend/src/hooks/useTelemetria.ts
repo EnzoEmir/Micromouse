@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { ConfigSessao, IndicadoresDesempenho, PacoteTelemetria } from "../types/telemetria";
+import type { IndicadoresDesempenho, PacoteTelemetria } from "../types/telemetria";
 import { WS_TELEMETRIA_URL } from "../services/telemetria";
 
 /** Estado inicial dos indicadores (espelha criar_estado_inicial do backend). */
@@ -27,19 +27,12 @@ const ESTADO_INICIAL: IndicadoresDesempenho = {
   alerta_dado_invalido: false,
 };
 
-const CONFIG_SESSAO_INICIAL: ConfigSessao = {
-  dimensao: null,
-  tentativa: null,
-};
-
 /** Intervalo entre tentativas de reconexão (ms). */
 const RECONNECT_INTERVAL_MS = 3000;
 
 export interface UseTelemetriaReturn {
   /** Estado atual dos indicadores de desempenho. */
   indicadores: IndicadoresDesempenho;
-  /** Dados de configuração da sessão (recebidos uma única vez). */
-  configSessao: ConfigSessao;
   /** Envia um pacote de telemetria via WebSocket. */
   enviarPacote: (pacote: PacoteTelemetria) => void;
   /** Indica se o WebSocket está conectado. */
@@ -51,8 +44,6 @@ export interface UseTelemetriaReturn {
 export function useTelemetria(): UseTelemetriaReturn {
   const [indicadores, setIndicadores] =
     useState<IndicadoresDesempenho>(ESTADO_INICIAL);
-  const [configSessao, setConfigSessao] =
-    useState<ConfigSessao>(CONFIG_SESSAO_INICIAL);
   const [conectado, setConectado] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
@@ -79,11 +70,7 @@ export function useTelemetria(): UseTelemetriaReturn {
     ws.onmessage = (event) => {
       try {
         const parsed = JSON.parse(event.data);
-        if (parsed.type === "SESSAO_INICIADA" && parsed.data) {
-          const { dimensao, tentativa, ...indicadoresData } = parsed.data;
-          setIndicadores(indicadoresData as IndicadoresDesempenho);
-          setConfigSessao({ dimensao, tentativa });
-        } else if (parsed.type === "ATUALIZACAO_TELEMETRIA" && parsed.data) {
+        if (parsed.type === "ATUALIZACAO_TELEMETRIA" && parsed.data) {
           setIndicadores(parsed.data as IndicadoresDesempenho);
         }
       } catch {
@@ -128,5 +115,5 @@ export function useTelemetria(): UseTelemetriaReturn {
     }
   }, []);
 
-  return { indicadores, configSessao, enviarPacote, conectado, erro };
+  return { indicadores, enviarPacote, conectado, erro };
 }
