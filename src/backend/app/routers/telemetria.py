@@ -5,7 +5,12 @@ from sqlmodel import Session
 import logging
 
 from ..database import get_session
-from ..services.telemetria import atualizar_indicadores, criar_estado_inicial, identificar_tipo_pacote
+from ..services.telemetria import (
+    atualizar_indicadores,
+    criar_estado_inicial,
+    identificar_tipo_pacote,
+    validar_pacote,
+)
 from ..schemas.telemetria import IndicadoresDesempenho, TipoPacote
 from ..services.websocket_manager import manager
 from ..models.corrida import Corrida
@@ -50,9 +55,8 @@ async def receber_pacote_telemetria(
     """
     pacote = payload.model_dump()
     tipo = identificar_tipo_pacote(pacote)
-    # print(f"Tipo de pacote: {tipo}")
-    # print(f"Payload: {pacote}")
     if tipo == TipoPacote.INVALIDO:
+        logger.warning("Pacote inválido ou não reconhecido: %s", pacote)
         raise HTTPException(
             status_code=400, detail="Pacote inválido ou não reconhecido")
 
@@ -66,6 +70,22 @@ async def receber_pacote_telemetria(
         estados_ativos[sessao_hardware_id] = criar_estado_inicial()
 
     estado_atual = estados_ativos[sessao_hardware_id]
+
+    resultado_validacao = validar_pacote(
+        pacote,
+        tipo,
+        estado_atual.ultimo_timestamp_ms,
+    )
+
+    if not resultado_validacao.valido:
+        logger.warning(
+            "Pacote de telemetria descartado: %s",
+            resultado_validacao.erros,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Pacote inválido: " + "; ".join(resultado_validacao.erros),
+        )
 
     # Processa os indicadores puros
     novo_estado = atualizar_indicadores(estado_atual, pacote)
