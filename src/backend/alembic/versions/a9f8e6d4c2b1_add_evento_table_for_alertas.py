@@ -29,6 +29,7 @@ def upgrade() -> None:
         sa.Column('id_corrida', sa.Integer(), nullable=True),
         sa.ForeignKeyConstraint(['id_corrida'], ['corrida.id_corrida'], ondelete='SET NULL'),
         sa.PrimaryKeyConstraint('id_evento', name='pk_evento_id_evento'),
+        if_not_exists=True,
     )
 
 
