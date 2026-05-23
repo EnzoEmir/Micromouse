@@ -6,7 +6,7 @@ Existem diferentes formas de utilizar parafusos M2 em peças impressas. A impres
 
 O modelo utilizado está disponível em `/mec/modelagem 3d/testes`. O teste inclui furos com diâmetros entre 2,0 mm e 2,4 mm, além de alojamentos para porcas com dimensões entre 4,0 mm e 4,4 mm.
 
-![Imagem do modelo em FreeCAD](mec\modelagem 3d\testes\TESTEfuros1.0.png)
+![Imagem do modelo em FreeCAD](mec/modelagem%203d/testes/TESTEfuros1.0.png)
 
 Nos testes realizados, observou-se que o parafuso M2 não conseguiu ser inserido em furos de 2,2 mm produzidos pela impressora Ender-3 Pro. Em contrapartida, os furos de 2,3 mm e 2,4 mm permitiram o autoatarraxamento do parafuso, possibilitando a fixação adequada entre as duas placas. Também foi observado que alojamentos de 4,4 mm ainda não permitem o encaixe adequado da porca, sendo necessário testar dimensões a partir de 4,5 mm.
 
