@@ -545,7 +545,7 @@ Detalhamento e exemplos
 
   ```json
   {
-    "tipo": "inicial",
+    "tipo": "inicio",
     "id_corrida": "8x8_001",
     "timestamp_ms": 0,
     "dimensao": 8,
@@ -558,7 +558,7 @@ Detalhamento e exemplos
 
   ```json
   {
-    "tipo": "movimentacao",
+    "tipo": "movimento",
     "id_corrida": "8x8_001",
     "timestamp_ms": 1234,
     "x": 2,
@@ -573,7 +573,7 @@ Detalhamento e exemplos
 
   ```json
   {
-    "tipo": "final",
+    "tipo": "fim",
     "id_corrida": "8x8_001",
     "timestamp_ms": 14250,
     "sucesso": true,
