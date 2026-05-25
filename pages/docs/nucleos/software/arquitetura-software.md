@@ -821,7 +821,7 @@ O modelo utiliza PostgreSQL e segue uma estrutura relacional.
 
 ---
 
-### TELEMETRIA (dados brutos → persistência)
+### TELEMETRIA 
 
 Em termos conceituais o sistema lida com dados brutos de telemetria (os pacotes enviados pelo firmware). Na implementação atual estes pacotes são recebidos no endpoint `POST /api/telemetria/pacote` e processados pelo backend, que realiza validação, cálculos de indicadores e persistência parcial/consolidada no banco de dados relacional.
 
