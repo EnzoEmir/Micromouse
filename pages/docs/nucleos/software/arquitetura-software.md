@@ -448,6 +448,26 @@ O sistema considera:
 - encerramento manual;
 - falha da corrida.
 
+#### Timeout de Conexão — Detecção de Offline
+
+O sistema considera o robô como **Offline** se nenhum pacote válido for
+recebido pelo backend por mais de **3 segundos**.
+
+Comportamento esperado:
+
+- O backend monitora o timestamp do último pacote recebido por sessão ativa.
+- Ao detectar ausência superior a 3 segundos, o backend deve:
+  - atualizar o estado da sessão para `"conexao_perdida"`;
+  - emitir um evento via WebSocket ao frontend com o tipo
+    `CONEXAO_PERDIDA`.
+- O frontend deve exibir um alerta visual indicando perda de sinal.
+- Caso a conexão seja restabelecida (novo pacote válido recebido), o sistema
+  retoma o estado anterior normalmente.
+
+> O pacote `heartbeat` foi definido pela equipe de eletrônica exatamente para
+> evitar falsos positivos nessa detecção: o ESP32 o envia periodicamente mesmo
+> com o robô parado, mantendo a sessão marcada como ativa.
+
 ---
 
 ### 6.3 Visão de Implementação
@@ -830,7 +850,7 @@ Especificações fornecidas pela equipe de eletrônica
 A equipe de eletrônica definiu um conjunto de convenções para os pacotes enviados pelo firmware (essas regras devem ser consideradas pelo backend):
 
 1. Comunicação — os pacotes são enviados via **Wi‑Fi** conectados a um roteador, usando **HTTP POST** com payload JSON.
-2. Campo `tipo` — cada pacote inclui um campo `tipo` indicando a que se refere o pacote (valores esperados: `inicial`, `movimentacao`, `final`, `heartbeat`, `rota`). O backend deve aceitar esse campo quando presente e/ou continuar a inferir o tipo a partir dos campos existentes.
+2. Campo `tipo` — cada pacote inclui um campo `tipo` indicando a que se refere o pacote (valores esperados: `inicio`, `movimento`, `fim`, `heartbeat`, `rota_otimizada_inicio `). O backend deve aceitar esse campo quando presente e/ou continuar a inferir o tipo a partir dos campos existentes.
 3. Heartbeat — o ESP32 envia pacotes `heartbeat` periodicamente, mesmo quando o robô está parado, para indicar que a sessão continua viva.
 4. Bateria — o campo `bateria` é enviado em todos os pacotes para permitir monitoramento contínuo do consumo.
 5. Velocidade — o campo de velocidade média `v_med` é enviado em **cm/s** (mais legível para o tamanho das células).
@@ -838,6 +858,19 @@ A equipe de eletrônica definiu um conjunto de convenções para os pacotes envi
 7. `timestamp_ms` — o timestamp enviado pelo firmware começa em `0` no primeiro pacote (offset relativo ao início da sessão) e é acumulado em milissegundos.
 8. Direção — incluir o campo `direcao` nas movimentações com cardinalidade: `N`, `S`, `L`, `O` (Norte, Sul, Leste, Oeste).
 9. Fast Run — durante a execução de Fast Run o ESP32 envia apenas os pacotes de início e fim (para não prejudicar o tempo de conclusão); o backend deve aceitar essa redução de granularidade.
+
+### Fast Run — Comportamento Esperado
+
+Durante a execução do Fast Run, o ESP32 envia apenas o pacote inicial e o pacote final da corrida, suprimindo os pacotes de movimentação intermediários
+para não comprometer o tempo de conclusão.
+
+Impacto no sistema:
+
+- **Backend:** deve aceitar a ausência de pacotes de movimentação durante essa
+  fase sem interpretar como falha de sessão.
+- **Frontend:** não deve exibir atualização de trajeto ponto a ponto durante o
+  Fast Run. A interface deve apresentar apenas o status `"Em execução"` e
+  atualizar os indicadores ao receber o pacote final.
 
 Recomendações para o backend
 
@@ -931,5 +964,6 @@ No sistema embarcado, a utilização de FreeRTOS, ESP-IDF e organização modula
 |1.7 | 09/05/2026|[Maria Eduarda](https://github.com/dudaa28) | Adição do Diagrama  de Sequências e Atualização da página| [Euller Júlio](https://github.com/Potatoyz908) |
 |1.8 | 09/05/2026|[Euller Júlio](https://github.com/Potatoyz908) | Adição de diagramas de sequência e explicação da arquitetura adotada| [Victor Pontual](https://github.com/VictorPontual)|
 |2.0 | 10/05/2026 | [Victor Pontual](https://github.com/VictorPontual) | Revisão estrutural da arquitetura e integração completa das visões de hardware e software embarcado | - |
-|2.1 | 25/05/2026 | [Giovanna Aguiar] | Alinhamento da seção de APIs e telemetria com a implementação; adição de exemplos e mapeamento de pacotes para persistência | - |
-|2.2 | 25/05/2026 | [Giovanna Aguiar] | Integração das especificações da equipe de eletrônica: `tipo`, `direcao`, `heartbeat`, formato de `id_corrida`, `v_med` em cm/s, e recomendações para o backend | - |
+|2.1 | 25/05/2026 | [Giovanna Aguiar](https://github.com/giovannabrito19) e [João Maurício](https://github.com/JMPNascimento) | Alinhamento da seção de APIs e telemetria com a implementação; adição de exemplos e mapeamento de pacotes para persistência | - |
+|2.2 | 25/05/2026 | [Giovanna Aguiar](https://github.com/giovannabrito19) e [João Maurício](https://github.com/JMPNascimento) | Integração das especificações da equipe de eletrônica: campo `tipo`, `direcao`, `heartbeat`, formato de `id_corrida`, unidade de `v_med` e recomendações para o backend | - |
+|2.3 | 25/05/2026 | [Giovanna Aguiar](https://github.com/giovannabrito19) e [João Maurício](https://github.com/JMPNascimento) | Detalhamento do impacto do Fast Run no backend e frontend e correção e refinamento da documentação do campo `tipo` | - |
