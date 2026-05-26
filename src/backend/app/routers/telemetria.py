@@ -8,6 +8,7 @@ from ..database import get_session
 from ..services.telemetria import atualizar_indicadores, criar_estado_inicial, identificar_tipo_pacote
 from ..schemas.telemetria import IndicadoresDesempenho, TipoPacote
 from ..services.websocket_manager import manager
+from ..services.connection_monitor import connection_monitor
 from ..models.corrida import Corrida
 from ..models.evento import Evento
 from ..models.labirinto import Labirinto
@@ -55,6 +56,9 @@ async def receber_pacote_telemetria(
     if tipo == TipoPacote.INVALIDO:
         raise HTTPException(
             status_code=400, detail="Pacote inválido ou não reconhecido")
+
+    # --- Registrar pacote válido no monitor de conexão ---
+    await connection_monitor.registrar_pacote(pacote.get("id_corrida", 0))
 
     sessao_hardware_id = pacote.get("id_corrida")
     if sessao_hardware_id is None:
@@ -149,6 +153,7 @@ async def receber_pacote_telemetria(
     await manager.send_json_to_all_clients(evento)
     if tipo == TipoPacote.FINAL:
         del estados_ativos[sessao_hardware_id]
+        connection_monitor.remover_corrida(sessao_hardware_id)
     return {"message": "Pacote processado com sucesso", "estado": estado_dict}
 
 
