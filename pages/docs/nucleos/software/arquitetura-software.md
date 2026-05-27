@@ -79,7 +79,7 @@ Responsável pelo armazenamento dos dados no PostgreSQL.
 
 A atualização em tempo real ocorre utilizando WebSocket entre backend e frontend.
 
-O Micromouse envia os dados de telemetria ao backend via HTTP/REST através da rede Wi-Fi. Após validação, o backend redistribui os dados ao frontend utilizando WebSocket.
+O Micromouse envia os dados de telemetria ao backend via Wi‑Fi através de um roteador utilizando HTTP POST com payload JSON. Após validação, o backend redistribui os dados ao frontend utilizando WebSocket.
 
 A atualização visual ocorre em tempo real, enquanto a persistência no banco pode ocorrer em lote para reduzir overhead de escrita.
 
@@ -105,7 +105,7 @@ Não foram adotadas arquiteturas baseadas em microsserviços devido ao aumento d
 
 | Camada | Linguagem |
 |---|---|
-| Frontend | JavaScript |
+| Frontend | TypeScript (React) |
 | Backend | Python |
 | Banco de Dados | SQL |
 | Firmware | C/C++ |
@@ -448,6 +448,26 @@ O sistema considera:
 - encerramento manual;
 - falha da corrida.
 
+#### Timeout de Conexão — Detecção de Offline
+
+O sistema considera o robô como **Offline** se nenhum pacote válido for
+recebido pelo backend por mais de **3 segundos**.
+
+Comportamento esperado:
+
+- O backend monitora o timestamp do último pacote recebido por sessão ativa.
+- Ao detectar ausência superior a 3 segundos, o backend deve:
+  - atualizar o estado da sessão para `"conexao_perdida"`;
+  - emitir um evento via WebSocket ao frontend com o tipo
+    `CONEXAO_PERDIDA`.
+- O frontend deve exibir um alerta visual indicando perda de sinal.
+- Caso a conexão seja restabelecida (novo pacote válido recebido), o sistema
+  retoma o estado anterior normalmente.
+
+> O pacote `heartbeat` foi definido pela equipe de eletrônica exatamente para
+> evitar falsos positivos nessa detecção: o ESP32 o envia periodicamente mesmo
+> com o robô parado, mantendo a sessão marcada como ativa.
+
 ---
 
 ### 6.3 Visão de Implementação
@@ -505,6 +525,88 @@ O backend FastAPI é organizado em:
 - serviços de telemetria;
 - serviços de persistência;
 - modelos de dados.
+
+**Endpoints principais**
+
+- `POST /api/telemetria/pacote` — endpoint HTTP utilizado pelo Micromouse (firmware) para enviar pacotes de telemetria (inicial, movimentação e final).
+- `WS  /api/telemetria/ws` — endpoint WebSocket utilizado pelo frontend para receber atualizações em tempo real (broadcast pelo backend).
+- `GET /api/corridas/{id_corrida}` — recuperação de detalhes de uma corrida.
+- `POST /api/corridas/{id_corrida}/salvar` — endpoint para salvar/editar metadados de uma corrida (registro manual/edição).
+
+Esses endpoints refletem a implementação atual do repositório e devem ser mantidos sincronizados com a documentação de APIs.
+
+Detalhamento e exemplos
+
+- `POST /api/telemetria/pacote`
+  - Uso: receber pacotes do firmware. Aceita três formatos principais: `PacoteInicial`, `PacoteMovimentacao` e `PacoteFinal`.
+  - Códigos: `201` (criado/processado), `400` (pacote inválido ou campos ausentes).
+  - Exemplo `PacoteInicial`:
+    - Exemplo `PacoteInicial` (novo formato enviado pelo firmware):
+
+  ```json
+  {
+    "tipo": "inicio",
+    "id_corrida": "8x8_001",
+    "timestamp_ms": 0,
+    "dimensao": 8,
+    "tentativa": 1,
+    "bateria": 100
+  }
+  ```
+
+    - Exemplo `PacoteMovimentacao` (inclui direção e bateria):
+
+  ```json
+  {
+    "tipo": "movimento",
+    "id_corrida": "8x8_001",
+    "timestamp_ms": 1234,
+    "x": 2,
+    "y": 1,
+    "direcao": "N",
+    "w": 5,
+    "bateria": 98.5
+  }
+  ```
+
+    - Exemplo `PacoteFinal` (v_med em cm/s):
+
+  ```json
+  {
+    "tipo": "fim",
+    "id_corrida": "8x8_001",
+    "timestamp_ms": 14250,
+    "sucesso": true,
+    "v_med": 22.0,
+    "bateria": 88
+  }
+  ```
+
+    - Exemplo `Heartbeat` (enviado mesmo com o robô parado):
+
+  ```json
+  {
+    "tipo": "heartbeat",
+    "id_corrida": "8x8_001",
+    "timestamp_ms": 15000,
+    "bateria": 87
+  }
+  ```
+
+- `WS /api/telemetria/ws`
+  - Uso: o frontend abre uma conexão WebSocket para receber broadcasts em tempo real.
+  - Mensagens observadas na implementação:
+    - Conexão: ao conectar, o servidor envia `{ "message": "connected" }`.
+    - Evento de sessão iniciada: `{ "type": "SESSAO_INICIADA", "data": { ... } }` — contém campos iniciais e o `id_corrida_banco` quando criado.
+    - Atualização de telemetria: `{ "type": "ATUALIZACAO_TELEMETRIA", "data": { ... } }` — contém o estado consolidado dos indicadores.
+
+- `GET /api/corridas/{id_corrida}`
+  - Uso: retornar detalhes de uma corrida, incluindo `corrida`, `percursos` e `eventos` associados.
+
+- `POST /api/corridas/{id_corrida}/salvar`
+  - Uso: endpoint administrativo para salvar/editar metadados ou resultados finais de uma corrida.
+
+Observação: mantenha exemplos atualizados conforme os `schemas` Pydantic em `src/backend/app/schemas/telemetria.py` e os routers em `src/backend/app/routers/`.
 
 Como a solução utiliza um banco de dados relacional, foi utilizado um **Modelo Entidade-Relacionamento (MER)** e seu respectivo **Diagrama Entidade-Relacionamento (DER)**, além do diagrama lógico de dados(DLD).
 
@@ -636,7 +738,7 @@ A visão de implantação apresenta os nós físicos da solução.
 
 | Origem | Destino | Protocolo |
 |---|---|---|
-| Micromouse | Backend | HTTP/REST via Wi-Fi |
+| Micromouse | Backend | HTTP POST via Wi‑Fi (roteador) |
 | Backend | Frontend | WebSocket (WSS) |
 | Frontend | Backend | HTTPS |
 | Backend | PostgreSQL | TCP/IP |
@@ -719,19 +821,61 @@ O modelo utiliza PostgreSQL e segue uma estrutura relacional.
 
 ---
 
-### TELEMETRIA
+### TELEMETRIA 
 
-- id_telemetria
-- timestamp
-- velocidade_media
-- velocidade_maxima
-- tensao
-- corrente
-- posicao_x
-- posicao_y
-- temperatura
-- id_corrida
+Em termos conceituais o sistema lida com dados brutos de telemetria (os pacotes enviados pelo firmware). Na implementação atual estes pacotes são recebidos no endpoint `POST /api/telemetria/pacote` e processados pelo backend, que realiza validação, cálculos de indicadores e persistência parcial/consolidada no banco de dados relacional.
 
+Mapeamento entre pacotes e persistência
+
+- `PacoteInicial` (ex.: `dimensao`, `tentativa`, `bateria`):
+  - Ação: cria (quando necessário) o `Labirinto` correspondente e uma nova entrada em `corrida` (tabela `corrida`). O backend preenche `sessao_hardware_id` e, após `flush`/`commit`, atualiza o estado em memória com `id_corrida_banco` (identificador real do banco).
+
+- `PacoteMovimentacao` (ex.: `x`, `y`, `w`, `timestamp_ms`):
+  - Ação: converte a passagem por célula em um registro de `percurso` (tabela `percurso`), que referencia `id_corrida` e `id_celula`. Esses registros permitem reconstruir o trajeto e gerar análises espaciais posterior.
+
+- `PacoteFinal` (ex.: `sucesso`, `v_med`, `bateria`):
+  - Ação: encerra a corrida no registro `corrida`, atualizando `data_hora_fim`, `velocidade_media`, `bateria_final`, `desafio_cumprido` e outros campos consolidados. Novos `evento` podem ser persistidos para registrar alertas ou ocorrências finais.
+
+Persistência de alertas e eventos
+
+- Durante o processamento dos pacotes o serviço de telemetria pode detectar condições críticas (ex.: bateria crítica, possível parada inesperada, dados inválidos). Esses registros são persistidos na tabela `evento` com referência à corrida (`id_corrida`) e timestamp.
+
+Observações práticas
+
+- Não existe, na implementação atual, uma tabela nomeada `telemetria` que armazene cada pacote bruto em formato original; em vez disso, o backend extrai e normaliza informações dos pacotes para inserir/atualizar `corrida` / `percurso` / `evento` conforme o tipo do pacote e a necessidade de armazenamento.
+
+Especificações fornecidas pela equipe de eletrônica
+
+A equipe de eletrônica definiu um conjunto de convenções para os pacotes enviados pelo firmware (essas regras devem ser consideradas pelo backend):
+
+1. Comunicação — os pacotes são enviados via **Wi‑Fi** conectados a um roteador, usando **HTTP POST** com payload JSON.
+2. Campo `tipo` — cada pacote inclui um campo `tipo` indicando a que se refere o pacote (valores esperados: `inicio`, `movimento`, `fim`, `heartbeat`, `rota_otimizada_inicio `). O backend deve aceitar esse campo quando presente e/ou continuar a inferir o tipo a partir dos campos existentes.
+3. Heartbeat — o ESP32 envia pacotes `heartbeat` periodicamente, mesmo quando o robô está parado, para indicar que a sessão continua viva.
+4. Bateria — o campo `bateria` é enviado em todos os pacotes para permitir monitoramento contínuo do consumo.
+5. Velocidade — o campo de velocidade média `v_med` é enviado em **cm/s** (mais legível para o tamanho das células).
+6. `id_corrida` — o identificador da corrida é gerado pelo ESP32 no formato `"<dimensao>x<dimensao>_NNN"` (ex.: `"8x8_001"`) e deve ser tratado como string pelo backend (ou mapeado para um identificador numérico interno).
+7. `timestamp_ms` — o timestamp enviado pelo firmware começa em `0` no primeiro pacote (offset relativo ao início da sessão) e é acumulado em milissegundos.
+8. Direção — incluir o campo `direcao` nas movimentações com cardinalidade: `N`, `S`, `L`, `O` (Norte, Sul, Leste, Oeste).
+9. Fast Run — durante a execução de Fast Run o ESP32 envia apenas os pacotes de início e fim (para não prejudicar o tempo de conclusão); o backend deve aceitar essa redução de granularidade.
+
+### Fast Run — Comportamento Esperado
+
+Durante a execução do Fast Run, o ESP32 envia apenas o pacote inicial e o pacote final da corrida, suprimindo os pacotes de movimentação intermediários
+para não comprometer o tempo de conclusão.
+
+Impacto no sistema:
+
+- **Backend:** deve aceitar a ausência de pacotes de movimentação durante essa
+  fase sem interpretar como falha de sessão.
+- **Frontend:** não deve exibir atualização de trajeto ponto a ponto durante o
+  Fast Run. A interface deve apresentar apenas o status `"Em execução"` e
+  atualizar os indicadores ao receber o pacote final.
+
+Exemplo de fluxo resumido
+
+1. Firmware envia `PacoteInicial` → backend cria `labirinto` + `corrida` → backend broadcast `{ "type": "SESSAO_INICIADA", ... }`.
+2. Firmware envia vários `PacoteMovimentacao` → backend atualiza estado em memória, cria registros `percurso` e broadcast `{ "type": "ATUALIZACAO_TELEMETRIA", ... }`.
+3. Firmware envia `PacoteFinal` → backend atualiza `corrida`, persiste `evento` se necessário e remove estado em memória.
 ---
 
 ### EVENTO
@@ -812,3 +956,6 @@ No sistema embarcado, a utilização de FreeRTOS, ESP-IDF e organização modula
 |1.7 | 09/05/2026|[Maria Eduarda](https://github.com/dudaa28) | Adição do Diagrama  de Sequências e Atualização da página| [Euller Júlio](https://github.com/Potatoyz908) |
 |1.8 | 09/05/2026|[Euller Júlio](https://github.com/Potatoyz908) | Adição de diagramas de sequência e explicação da arquitetura adotada| [Victor Pontual](https://github.com/VictorPontual)|
 |2.0 | 10/05/2026 | [Victor Pontual](https://github.com/VictorPontual) | Revisão estrutural da arquitetura e integração completa das visões de hardware e software embarcado | - |
+|2.1 | 25/05/2026 | [Giovanna Aguiar](https://github.com/giovannabrito19) e [João Maurício](https://github.com/JMPNascimento) | Alinhamento da seção de APIs e telemetria com a implementação; adição de exemplos e mapeamento de pacotes para persistência | - |
+|2.2 | 25/05/2026 | [Giovanna Aguiar](https://github.com/giovannabrito19) e [João Maurício](https://github.com/JMPNascimento) | Integração das especificações da equipe de eletrônica: campo `tipo`, `direcao`, `heartbeat`, formato de `id_corrida`, unidade de `v_med` e recomendações para o backend | - |
+|2.3 | 25/05/2026 | [Giovanna Aguiar](https://github.com/giovannabrito19) e [João Maurício](https://github.com/JMPNascimento) | Detalhamento do impacto do Fast Run no backend e frontend e correção e refinamento da documentação do campo `tipo` | - |
