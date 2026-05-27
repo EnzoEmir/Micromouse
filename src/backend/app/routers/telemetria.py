@@ -72,7 +72,7 @@ async def receber_pacote_telemetria(
 
     # Encerrar corridas ativas anteriores se um novo pacote inicial chegar
     if tipo == TipoPacote.INICIAL and estados_ativos:
-        await _encerrar_corridas_ativas(session, sessao_hardware_id)
+        await _abortar_corridas_ativas(session, sessao_hardware_id)
 
     # Recupera ou inicializa o estado em memória
     if sessao_hardware_id not in estados_ativos:
@@ -166,14 +166,14 @@ async def receber_pacote_telemetria(
     return {"message": "Pacote processado com sucesso", "estado": estado_dict}
 
 
-async def _encerrar_corridas_ativas(
+async def _abortar_corridas_ativas(
     session: Session,
     novo_sessao_id: int,
 ) -> None:
-    """Encerra corridas ativas quando uma nova sessão é iniciada.
+    """Aborta corridas ativas quando uma nova sessão é iniciada.
 
     Garante que apenas uma corrida esteja ativa por vez,
-    encerrando as anteriores com status FALHA no banco de dados.
+    abortando as anteriores com status ABORTADA no banco de dados.
     """
     ids_para_remover = [
         sid for sid in estados_ativos
