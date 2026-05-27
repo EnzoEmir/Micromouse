@@ -4,7 +4,8 @@ from fastapi.testclient import TestClient
 def test_websocket_connection(client:TestClient):
     with client.websocket_connect("/api/telemetria/ws") as websocket:
         message = websocket.receive_json()
-        assert message == {"message": "connected"}
+        assert message["type"] == "HANDSHAKE"
+        assert message["data"]["status"] == "connected"
 
 def test_telemetry_post_endpoint(client:TestClient):
     response = client.post("/api/telemetria/pacote", json={
@@ -22,7 +23,8 @@ def test_telemetry_post_endpoint(client:TestClient):
 def test_websocket_message_delivery(client:TestClient):
     with client.websocket_connect("/api/telemetria/ws") as websocket:
         msg_conexao = websocket.receive_json()
-        assert msg_conexao == {"message": "connected"}
+        assert msg_conexao["type"] == "HANDSHAKE"
+        assert msg_conexao["data"]["status"] == "connected"
 
         # Enviamos um pacote de telemetria
         response = client.post("/api/telemetria/pacote", json={
