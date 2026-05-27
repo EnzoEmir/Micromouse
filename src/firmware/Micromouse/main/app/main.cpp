@@ -10,7 +10,7 @@
 #include "motor/motor.hpp"
 #include "pins.hpp"
 #include "vl53l0x/IV_Vl53l0x.hpp"
-#include "wifi.hpp"
+#include "maze.hpp"
 #include "telemetria.hpp"
 
 namespace {
@@ -26,8 +26,11 @@ Motor *g_motor_left = nullptr;
 Motor *g_motor_right = nullptr;
 volatile float g_tof_distance_mm = -1.0f;
 
-// 10 segundos de Heartbeat
-Telemetria g_telemetria(BACKEND_URL, 10000);
+// 1,5 segundos de Heartbeat
+Telemetria g_telemetria(BACKEND_URL, 1500);
+
+// Mapa do labirinto compartilhado, serializado junto a cada pacote de telemetria.
+Labirinto g_labirinto;
 
 struct BatterySnapshot {
     float voltage;
@@ -137,40 +140,28 @@ void motor_task(void *) {
 
 // TELEMETRIA
 void telemetria_task(void *) {
-    wifi_init_sta(WIFI_SSID, WIFI_PASS);
+    // Conecta ao Wi-Fi (bloqueante) e envia o pacote de inicio de mapeamento.
+    g_telemetria.inicializar(WIFI_SSID, WIFI_PASS, g_labirinto);
 
-    // Executa o Handshake mandando o pacote "inicio"
-    g_telemetria.inicializar();
-
-    const TickType_t delay = pdMS_TO_TICKS(1000); // Executa a verificação a cada 1s
+    const TickType_t delay = pdMS_TO_TICKS(500); // Verifica a cada 0,5s p/ honrar o heartbeat de 1,5s
 
     while (true) {
-        if (wifi_is_connected()) {
-            BatterySnapshot bat = {};
-            portENTER_CRITICAL(&g_battery_snapshot_mux);
-            bat = g_battery_snapshot;
-            portEXIT_CRITICAL(&g_battery_snapshot_mux);
+        BatterySnapshot bat = {};
+        portENTER_CRITICAL(&g_battery_snapshot_mux);
+        bat = g_battery_snapshot;
+        portEXIT_CRITICAL(&g_battery_snapshot_mux);
 
-            DadosIMU imu = {};
-            portENTER_CRITICAL(&g_imu_snapshot_mux);
-            imu = g_imu_snapshot;
-            portEXIT_CRITICAL(&g_imu_snapshot_mux);
+        DadosIMU imu = {};
+        portENTER_CRITICAL(&g_imu_snapshot_mux);
+        imu = g_imu_snapshot;
+        portEXIT_CRITICAL(&g_imu_snapshot_mux);
 
-            // struct temporária(ARRUMAR DEPOIS)
-            DadosSensores sensores = {};
-            sensores.ir_esq = static_cast<uint16_t>(g_tof_distance_mm);
-            sensores.imu_accel_x = imu.accel_x;
-            sensores.imu_accel_y = imu.accel_y;
-            sensores.imu_gyro_z = imu.gyro_z;
-            if (g_motor_left && g_motor_right) {
-                sensores.enc_esquerdo = g_motor_left->getEncoderCount();
-                sensores.enc_direito = g_motor_right->getEncoderCount();
-            }
-
-            // Mantém a sessão ativa na web se o robô estiver parado ou pensando
-            // A direção inicial padrão será Norte "N"
-            g_telemetria.verificar_heartbeat(static_cast<int>(bat.soc), "N", sensores);
-        }
+        // Mantém a sessão ativa na web enquanto o robô está parado ou pensando.
+        // Direção inicial padrão "N"; o estado do Wi-Fi é tratado dentro da Telemetria.
+        g_telemetria.verificar_heartbeat(g_labirinto,
+                                         static_cast<int>(bat.soc),
+                                         "N",
+                                         imu.temperatura);
 
         vTaskDelay(delay);
     }

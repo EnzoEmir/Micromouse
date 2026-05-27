@@ -4,44 +4,69 @@
 #include <string>
 #include <cstdint>
 #include "esp_err.h"
+#include "envio_dados.hpp"
+#include "maze.hpp"
 
+/**
+ * @brief Gerenciador da sessão de telemetria.
+ *
+ * Integra os três módulos do envio: conecta o Wi-Fi, decide *quando* enviar
+ * (eventos e heartbeat de inatividade) e delega o POST em si para
+ * enviar_dados_sensores() (módulo envio_dados).
+ */
 class Telemetria {
 private:
     const char* TAG = "TELEMETRIA";
     std::string _server_url;
-    std::string _id_corrida;
     int64_t _ultimo_envio_ms;
     int64_t _timeout_heartbeat_ms;
 
-    void inicializar_id_corrida();
-    esp_err_t enviar_post(const char* json_string);
+    // Tempo atual (uptime) em milissegundos.
+    int64_t agora_ms() const;
 
 public:
     /**
      * @brief Construtor da classe de Telemetria.
      * @param url Endereço completo da API backend.
-     * @param heartbeat_ms Tempo limite em milissegundos para disparar o heartbeat se o robô estiver parado.
+     * @param heartbeat_ms Tempo limite (ms) para disparar o heartbeat com o robô parado.
      */
     Telemetria(std::string url, int64_t heartbeat_ms = 10000);
 
     /**
-     * @brief Inicializa o armazenamento NVS, incrementa o ID da corrida e faz o Handshake inicial.
+     * @brief Conecta ao Wi-Fi (bloqueante) e envia o pacote de início de mapeamento.
+     * @param ssid SSID da rede Wi-Fi.
+     * @param senha Senha da rede Wi-Fi.
+     * @param labirinto Labirinto cuja matriz acompanha o pacote inicial.
      */
-    void inicializar();
+    void inicializar(const char* ssid, const char* senha, const Labirinto& labirinto);
 
     /**
-     * @brief Formata e envia um pacote de dados via HTTP POST.
-     * @param tipo Tipo do pacote ("inicio", "movimento", "fim", "heartbeat").
-     * @param bateria Nível atual da bateria (0 a 100).
-     * @param v_med Velocidade média na célula atual em cm/s.
-     * @param direcao Direção cardinal ("N", "S", "L", "O").
+     * @brief Monta o pacote e o envia via HTTP POST, respeitando o estado do Wi-Fi.
+     *
+     * Não envia (e retorna ESP_FAIL) caso o Wi-Fi esteja desconectado. Em caso de
+     * sucesso, atualiza o instante do último envio (usado pelo heartbeat).
+     *
+     * @param tipo Tipo/evento do pacote.
+     * @param labirinto Labirinto cuja matriz será serializada.
+     * @param soc Estado de carga da bateria (0 a 100 %).
+     * @param direcao Direção observada ("N", "S", "L", "O").
+     * @param velocidade_media_cms Velocidade média na célula atual (cm/s).
+     * @param temperatura Temperatura do IMU (°C).
      */
-    void enviar_pacote(std::string tipo, int bateria, int v_med, std::string direcao);
+    esp_err_t enviar(TipoEnvio tipo,
+                     const Labirinto& labirinto,
+                     int soc,
+                     const char* direcao,
+                     float velocidade_media_cms,
+                     float temperatura);
 
     /**
-     * @brief Verifica se o robô está ocioso e dispara um pacote do tipo heartbeat se necessário.
+     * @brief Dispara um pacote heartbeat se o robô estiver ocioso há tempo suficiente.
      */
-    void verificar_heartbeat(int bateria_atual, std::string direcao_atual);
+    void verificar_heartbeat(const Labirinto& labirinto,
+                             int soc,
+                             const char* direcao,
+                             float temperatura);
 };
 
 #endif

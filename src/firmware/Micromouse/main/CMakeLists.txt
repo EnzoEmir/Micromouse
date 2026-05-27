@@ -9,6 +9,7 @@ idf_component_register(
         "maze/maze.cpp"
         "telemetria/telemetria.cpp"
         "wifi/wifi.cpp"
-    INCLUDE_DIRS "." "app" "battery" "motor" "vl53l0x" "imu" "maze" "telemetria" "wifi"
-    REQUIRES esp_driver_i2c esp_driver_gpio esp_driver_ledc esp_driver_pcnt esp_driver_uart nvs_flash esp_timer truita__mpu9250 esp_http_client json
+        "envio_dados/envio_dados.cpp"
+    INCLUDE_DIRS "." "app" "battery" "motor" "vl53l0x" "imu" "maze" "telemetria" "wifi" "envio_dados"
+    REQUIRES esp_driver_i2c esp_driver_gpio esp_driver_ledc esp_driver_pcnt esp_driver_uart nvs_flash esp_timer truita__mpu9250 esp_http_client espressif__cjson esp_wifi esp_event esp_netif
 )
