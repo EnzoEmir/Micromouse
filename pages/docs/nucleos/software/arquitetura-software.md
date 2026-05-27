@@ -843,7 +843,6 @@ Persistência de alertas e eventos
 Observações práticas
 
 - Não existe, na implementação atual, uma tabela nomeada `telemetria` que armazene cada pacote bruto em formato original; em vez disso, o backend extrai e normaliza informações dos pacotes para inserir/atualizar `corrida` / `percurso` / `evento` conforme o tipo do pacote e a necessidade de armazenamento.
-- Se for desejável manter os pacotes brutos (para auditoria ou reprocessamento), recomendamos adicionar uma tabela `raw_telemetry` para armazenar o JSON original recebido em `POST /api/telemetria/pacote` antes da normalização.
 
 Especificações fornecidas pela equipe de eletrônica
 
@@ -871,13 +870,6 @@ Impacto no sistema:
 - **Frontend:** não deve exibir atualização de trajeto ponto a ponto durante o
   Fast Run. A interface deve apresentar apenas o status `"Em execução"` e
   atualizar os indicadores ao receber o pacote final.
-
-Recomendações para o backend
-
-- Ajustar os `schemas`/validações para aceitar `id_corrida` como string (ou aceitar ambos formatos) e para validar/aceitar o campo `tipo` se presente.
-- Registrar (opcional) os pacotes de `heartbeat` na tabela `evento` como `KEEPALIVE` ou apenas atualizar o último timestamp de conexão em memória, conforme a necessidade de auditoria.
-- Interpretar `v_med` em cm/s ao persistir em `corrida` (ou documentar a unidade usada) para evitar confusões de unidade.
-
 
 Exemplo de fluxo resumido
 
