@@ -115,6 +115,15 @@ export function useTelemetria(): UseTelemetriaReturn {
           return;
         }
 
+        if (parsed.type === "SESSAO_ENCERRADA") {
+          console.log("[useTelemetria] Sessão anterior encerrada:", parsed.data);
+          setIndicadores(ESTADO_INICIAL);
+          setConfigSessao(CONFIG_SESSAO_INICIAL);
+          setStatusConexao("waiting");
+          setMensagemStatusConexao(null);
+          return;
+        }
+
         if (parsed.type === "SESSAO_INICIADA" && parsed.data) {
           const { dimensao, tentativa, ...indicadoresData } = parsed.data;
           setIndicadores(indicadoresData as IndicadoresDesempenho);
