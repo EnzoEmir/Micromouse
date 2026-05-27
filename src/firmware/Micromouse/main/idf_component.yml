@@ -19,3 +19,4 @@ dependencies:
   espp/i2c: ^1.0.36
   espp/logger: ^1.0.36
   espp/timer: ^1.0.36
+  espressif/cjson: "*"
