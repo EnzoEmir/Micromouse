@@ -5,7 +5,12 @@ from sqlmodel import Session
 import logging
 
 from ..database import get_session
-from ..services.telemetria import atualizar_indicadores, criar_estado_inicial, identificar_tipo_pacote
+from ..services.telemetria import (
+    atualizar_indicadores,
+    criar_estado_inicial,
+    identificar_tipo_pacote,
+    validar_pacote,
+)
 from ..schemas.telemetria import IndicadoresDesempenho, TipoPacote
 from ..services.websocket_manager import manager
 from ..services.connection_monitor import connection_monitor
@@ -13,7 +18,7 @@ from ..models.corrida import Corrida
 from ..models.evento import Evento
 from ..models.labirinto import Labirinto
 from ..models.enums import StatusCorrida, TipoLabirinto
-from ..schemas.telemetria import PacoteInicial, PacoteMovimentacao, PacoteFinal
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/telemetria", tags=["telemetria"])
@@ -38,6 +43,19 @@ async def websocket_telemetria(websocket: WebSocket):
         }
     }
     await manager.send_json_to_client(handshake, websocket)
+    
+    # Enviar status atual de todas as corridas ativas para o novo cliente
+    for sid in estados_ativos:
+        status = connection_monitor.get_status(sid) or "online"
+        await manager.send_json_to_client({
+            "type": "CONNECTION_STATUS",
+            "data": {
+                "id_corrida": sid,
+                "status": status,
+                "message": "Status recuperado ao conectar"
+            }
+        }, websocket)
+
     try:
         while True:
             await websocket.receive_json()
@@ -47,40 +65,67 @@ async def websocket_telemetria(websocket: WebSocket):
 
 @router.post("/pacote", status_code=201)
 async def receber_pacote_telemetria(
-    payload: PacoteInicial | PacoteMovimentacao | PacoteFinal,
+    payload: Dict[str, Any],
     session: Session = Depends(get_session)
 ):
     """
     Endpoint HTTP para o Micromouse enviar pacotes de telemetria.
     Recebe o pacote, atualiza o estado em memória e notifica o Dashboard.
     """
-    pacote = payload.model_dump()
+    pacote = payload
     tipo = identificar_tipo_pacote(pacote)
-    # print(f"Tipo de pacote: {tipo}")
-    # print(f"Payload: {pacote}")
-    if tipo == TipoPacote.INVALIDO:
-        raise HTTPException(
-            status_code=400, detail="Pacote inválido ou não reconhecido")
 
-    # --- Registrar pacote válido no monitor de conexão ---
+    # --- Registrar pacote no monitor de conexão e validar ---
     await connection_monitor.registrar_pacote(pacote.get("id_corrida", 0))
-
+    
     sessao_hardware_id = pacote.get("id_corrida")
-    if sessao_hardware_id is None:
-        raise HTTPException(
-            status_code=400, detail="id_corrida ausente no pacote")
+    tipo = identificar_tipo_pacote(pacote)
+    
+    # 2. Obtém o último timestamp se a sessão já existir (para validar regressão)
+    ultimo_ts = None
+    if isinstance(sessao_hardware_id, int) and sessao_hardware_id in estados_ativos:
+        ultimo_ts = estados_ativos[sessao_hardware_id].ultimo_timestamp_ms
 
-    # Encerrar corridas ativas anteriores se um novo pacote inicial chegar
-    if tipo == TipoPacote.INICIAL and estados_ativos:
+    # 3. BARREIRA DE VALIDAÇÃO RIGOROSA
+    resultado = validar_pacote(pacote, tipo, ultimo_ts)
+    if not resultado.valido:
+        erros_str = ", ".join(resultado.erros)
+        logger.warning("Pacote REJEITADO por falha na validação: %s", erros_str)
+        
+        # Notificar o dashboard sobre o erro de validação
+        await manager.send_json_to_all_clients({
+            "type": "ERROR",
+            "message": f"Dados inválidos do robô: {erros_str}"
+        })
+
+        raise HTTPException(
+            status_code=422,
+            detail={"mensagem": "Pacote descartado", "erros": resultado.erros},
+        )
+
+    # 4. Gerenciamento de Sessão: Encerrar anteriores se for um novo pacote inicial
+    if tipo == TipoPacote.INICIAL and sessao_hardware_id not in estados_ativos:
         await _abortar_corridas_ativas(session, sessao_hardware_id)
 
-    # Recupera ou inicializa o estado em memória
+    elif tipo == TipoPacote.INICIAL and sessao_hardware_id in estados_ativos:
+        # Recebimento de pacote INICIAL com um `sessao_hardware_id` já em uso.
+        # Enviar notificação de erro ao dashboard e retornar uma exceção
+        logger.error("Pacote INICIAL rejeitado: id de sessão repetido %s", sessao_hardware_id)
+        await manager.send_json_to_all_clients({
+            "type": "ERROR",
+            "message": f"ID de sessão repetido recebido: {sessao_hardware_id}. Pacote INICIAL rejeitado."
+        })
+        raise HTTPException(
+            status_code=404,
+            detail={"mensagem": "ID de sessão repetido", "id_corrida": sessao_hardware_id},
+        )
+    # 5. Inicializa ou recupera estado
     if sessao_hardware_id not in estados_ativos:
         estados_ativos[sessao_hardware_id] = criar_estado_inicial()
 
     estado_atual = estados_ativos[sessao_hardware_id]
 
-    # Processa os indicadores puros
+    # 5. Processa os indicadores puros (Cálculos de velocidade, etc)
     novo_estado = atualizar_indicadores(estado_atual, pacote)
 
     commit_realizado = False
@@ -95,10 +140,7 @@ async def receber_pacote_telemetria(
             tipo_lab = TipoLabirinto.DEZESSEIS
         elif int(dimensao) == 4:
             tipo_lab = TipoLabirinto.QUATRO
-        else:
-            raise HTTPException(
-                status_code=400, detail="Dimensão inválida do labirinto")
-
+        
         labirinto = Labirinto(tipo_labirinto=tipo_lab)
         session.add(labirinto)
         session.flush()
@@ -121,6 +163,7 @@ async def receber_pacote_telemetria(
         session.commit()
         session.refresh(corrida)
         commit_realizado = True
+
     # Se for pacote final, atualizar o banco de dados
     if tipo == TipoPacote.FINAL and novo_estado.id_corrida_banco is not None:
         corrida = session.get(Corrida, novo_estado.id_corrida_banco)

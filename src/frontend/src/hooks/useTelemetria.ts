@@ -8,6 +8,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import toast from "react-hot-toast";
 
 import type {
   ConfigSessao,
@@ -79,6 +80,7 @@ export function useTelemetria(): UseTelemetriaReturn {
     useState<StatusConexaoMicromouse>("waiting");
   const [mensagemStatusConexao, setMensagemStatusConexao] = useState<string | null>(null);
 
+
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -88,7 +90,7 @@ export function useTelemetria(): UseTelemetriaReturn {
     localStorage.setItem("configSessao", JSON.stringify(configSessao));
   }, [indicadores, configSessao]);
 
-  const conectar = useCallback(() => {
+  const realizarConexao = useCallback(function conectar() {
     // Evitar conexões duplicadas
     if (
       wsRef.current &&
@@ -108,6 +110,14 @@ export function useTelemetria(): UseTelemetriaReturn {
     ws.onmessage = (event) => {
       try {
         const parsed = JSON.parse(event.data);
+        
+        // Tratar erros enviados pelo backend
+        if (parsed.type === "ERROR") {
+          toast.error(parsed.message || "Erro na telemetria", {
+            id: "telemetria-error", // Evita toasts duplicados
+          });
+          return;
+        }
 
         if (parsed.type === "CONNECTION_STATUS") {
           setStatusConexao(parsed.data?.status === "offline" ? "offline" : "online");
@@ -124,19 +134,21 @@ export function useTelemetria(): UseTelemetriaReturn {
           return;
         }
 
-        if (parsed.type === "SESSAO_INICIADA" && parsed.data) {
-          const { dimensao, tentativa, ...indicadoresData } = parsed.data;
+        const pacote = parsed?.data;
+
+        if (parsed.type === "SESSAO_INICIADA") {
+          const { dimensao, tentativa, ...indicadoresData } = pacote;
           setIndicadores(indicadoresData as IndicadoresDesempenho);
           setConfigSessao({ dimensao, tentativa });
           setStatusConexao("online");
           setMensagemStatusConexao(null);
-        } else if (parsed.type === "ATUALIZACAO_TELEMETRIA" && parsed.data) {
-          setIndicadores(parsed.data as IndicadoresDesempenho);
+        } else if (parsed.type === "ATUALIZACAO_TELEMETRIA") {
+          setIndicadores(pacote as IndicadoresDesempenho);
           setStatusConexao("online");
           setMensagemStatusConexao(null);
         }
-      } catch {
-        console.error("[useTelemetria] Erro ao parsear mensagem:", event.data);
+      } catch (e) {
+        console.error("[useTelemetria] Erro ao processar mensagem:", e);
       }
     };
 
@@ -156,7 +168,7 @@ export function useTelemetria(): UseTelemetriaReturn {
   }, []);
 
   useEffect(() => {
-    conectar();
+    realizarConexao();
 
     return () => {
       // Cleanup ao desmontar
@@ -167,7 +179,7 @@ export function useTelemetria(): UseTelemetriaReturn {
         wsRef.current.close();
       }
     };
-  }, [conectar]);
+  }, [realizarConexao]);
 
   const enviarPacote = useCallback((pacote: PacoteTelemetria) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
