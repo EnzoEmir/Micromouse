@@ -80,7 +80,7 @@ async def receber_pacote_telemetria(
     
     sessao_hardware_id = pacote.get("id_corrida")
     tipo = identificar_tipo_pacote(pacote)
-    
+    print("Tipo do pacote identificado:", tipo)
     # 2. Obtém o último timestamp se a sessão já existir (para validar regressão)
     ultimo_ts = None
     if isinstance(sessao_hardware_id, int) and sessao_hardware_id in estados_ativos:
@@ -186,7 +186,7 @@ async def receber_pacote_telemetria(
 
     # Faz o broadcast para o Dashboard via WebSocket
     estado_dict = _estado_to_dict(novo_estado)
-
+    print("Estado dict", estado_dict)
     if tipo == TipoPacote.INICIAL:
         evento = {
             "type": "SESSAO_INICIADA",
@@ -201,7 +201,21 @@ async def receber_pacote_telemetria(
             "type": "ATUALIZACAO_TELEMETRIA",
             "data": estado_dict
         }
+    if tipo == TipoPacote.MOVIMENTACAO:
+        evento_movimentacao = {
+            "type": "MOVIMENTACAO",
+            "data": {
+                "id_corrida": pacote.get("id_corrida"),
+                "timestamp_ms": pacote.get("timestamp_ms"),
+                "x": pacote.get("x"),
+                "y": pacote.get("y"),
+                "w": pacote.get("w"),
+            },
+        }
+        await manager.send_json_to_all_clients(evento_movimentacao)
 
+    print(f"Broadcasting evento: {evento}")
+    print()
     await manager.send_json_to_all_clients(evento)
     if tipo == TipoPacote.FINAL:
         del estados_ativos[sessao_hardware_id]

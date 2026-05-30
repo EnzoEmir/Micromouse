@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import { createMockTelemetry } from "./mockTelemetry";
-import { createMaze, markVisited, markWall } from "./mazeUtils";
+import { useTelemetria } from "../../hooks/useTelemetria";
+import { createMaze, isInsideMaze, markVisited, markWall } from "./mazeUtils";
 import type { Cell, Direction, Position } from "./types";
 
 const DEFAULT_GRID_SIZE = 8;
 const GRID_SIZES = [16, 8, 4] as const;
-const MAX_STEPS = 512;
 
 const positionsEqual = (a: Position, b: Position) =>
   a.row === b.row && a.col === b.col;
 
 export default function MazeViewer() {
+  const { ultimaMovimentacao, configSessao, indicadores, statusConexao } =
+    useTelemetria();
   // Estado principal da corrida e do labirinto.
   const [gridSize, setGridSize] = useState(DEFAULT_GRID_SIZE);
   const [maze, setMaze] = useState(() => createMaze(DEFAULT_GRID_SIZE));
@@ -33,14 +34,12 @@ export default function MazeViewer() {
     "idle" | "running" | "finished"
   >("idle");
   const stepRef = useRef(0);
+  const sessionIdRef = useRef<number | null>(null);
   // Mantem posicao atual sem depender do fechamento do useEffect.
   const positionRef = useRef<Position>({ row: 0, col: 0 });
   const mazeRef = useRef<Cell[][]>(maze);
   const pathRef = useRef<Position[]>(path);
   const directionRef = useRef<Direction>(direction);
-  const telemetryRef = useRef<ReturnType<typeof createMockTelemetry> | null>(
-    null,
-  );
   const snapshot = viewMode === "history" ? history[historyIndex] : undefined;
   const displayMaze = snapshot ? snapshot.maze : maze;
   const displayPath = snapshot ? snapshot.path : path;
@@ -68,8 +67,8 @@ export default function MazeViewer() {
     );
 
   const resetRunState = (size: number) => {
-    telemetryRef.current?.stop();
     stepRef.current = 0;
+    sessionIdRef.current = null;
     setSessionStatus("idle");
     setPosition({ row: 0, col: 0 });
     positionRef.current = { row: 0, col: 0 };
@@ -89,21 +88,14 @@ export default function MazeViewer() {
     setGridSize(size);
   };
 
-  // Inicia a telemetria mock (CA-12-01).
   const startSession = () => {
-    if (sessionStatus === "running") {
-      return;
-    }
     resetRunState(gridSize);
-    setSessionStatus("running");
   };
 
   const openHistory = () => {
     if (history.length === 0) {
       return;
     }
-
-    telemetryRef.current?.stop();
     setSessionStatus("finished");
     setViewMode("history");
     setHistoryIndex(0);
@@ -128,60 +120,99 @@ export default function MazeViewer() {
     directionRef.current = direction;
   }, [direction]);
 
-  // Ciclo principal da telemetria e atualizacao do grid.
   useEffect(() => {
-    if (sessionStatus !== "running") {
+    const dimensao = Number(configSessao.dimensao);
+    if (
+      !Number.isNaN(dimensao) &&
+      (dimensao === 4 || dimensao === 8 || dimensao === 16)
+    ) {
+      if (dimensao !== gridSize) {
+        resetRunState(dimensao);
+        setGridSize(dimensao);
+      }
+    }
+  }, [configSessao.dimensao, gridSize]);
+
+  useEffect(() => {
+    if (!ultimaMovimentacao) {
       return;
     }
 
-    const telemetry = createMockTelemetry({
-      size: gridSize,
-      intervalMs: 450,
-      maxSteps: MAX_STEPS,
-      onTelemetry: (update) => {
-        if (update.hitWall && update.wallDir) {
-          setMaze((prev) =>
-            markWall(prev, positionRef.current, update.wallDir!),
-          );
-          setDirection(update.direction);
-          return;
-        }
+    if (sessionIdRef.current !== ultimaMovimentacao.id_corrida) {
+      sessionIdRef.current = ultimaMovimentacao.id_corrida;
+      resetRunState(gridSize);
+    }
 
-        if (update.moved) {
-          stepRef.current += 1;
-          setMaze((prev) =>
-            markVisited(prev, update.position, stepRef.current),
-          );
-          setPath((prev) => [...prev, update.position]);
-          setPosition(update.position);
-          positionRef.current = update.position;
-          setDirection(update.direction);
-        }
-      },
-      onFinish: () => {
-        setHistory((prev) => [
-          {
-            maze: cloneMaze(mazeRef.current),
-            path: [...pathRef.current],
-            endPosition: positionRef.current,
-            endDirection: directionRef.current,
-            gridSize,
-          },
-          ...prev,
-        ]);
-        setHistoryIndex(0);
-        setSessionStatus("finished");
-        telemetry.stop();
-      },
+    const nextPosition = {
+      row: ultimaMovimentacao.y,
+      col: ultimaMovimentacao.x,
+    };
+
+    if (!isInsideMaze(nextPosition, gridSize)) {
+      return;
+    }
+
+    const prevPosition = positionRef.current;
+    let nextDirection: Direction = directionRef.current;
+    if (nextPosition.row === prevPosition.row - 1) {
+      nextDirection = "north";
+    } else if (nextPosition.row === prevPosition.row + 1) {
+      nextDirection = "south";
+    } else if (nextPosition.col === prevPosition.col + 1) {
+      nextDirection = "east";
+    } else if (nextPosition.col === prevPosition.col - 1) {
+      nextDirection = "west";
+    }
+
+    setMaze((prev) => {
+      let nextMaze = prev;
+
+      if (ultimaMovimentacao.paredes.norte) {
+        nextMaze = markWall(nextMaze, nextPosition, "north");
+      }
+      if (ultimaMovimentacao.paredes.sul) {
+        nextMaze = markWall(nextMaze, nextPosition, "south");
+      }
+      if (ultimaMovimentacao.paredes.leste) {
+        nextMaze = markWall(nextMaze, nextPosition, "east");
+      }
+      if (ultimaMovimentacao.paredes.oeste) {
+        nextMaze = markWall(nextMaze, nextPosition, "west");
+      }
+
+      return nextMaze;
     });
 
-    telemetryRef.current = telemetry;
-    telemetry.start();
+    stepRef.current += 1;
+    setMaze((prev) => markVisited(prev, nextPosition, stepRef.current));
+    setPath((prev) => [...prev, nextPosition]);
+    setPosition(nextPosition);
+    positionRef.current = nextPosition;
+    setDirection(nextDirection);
+    setSessionStatus("running");
+  }, [ultimaMovimentacao, gridSize]);
 
-    return () => {
-      telemetry.stop();
-    };
-  }, [sessionStatus, gridSize]);
+  useEffect(() => {
+    if (
+      indicadores.status_corrida !== "concluida" &&
+      indicadores.status_corrida !== "falha"
+    ) {
+      return;
+    }
+
+    setHistory((prev) => [
+      {
+        maze: cloneMaze(mazeRef.current),
+        path: [...pathRef.current],
+        endPosition: positionRef.current,
+        endDirection: directionRef.current,
+        gridSize,
+      },
+      ...prev,
+    ]);
+    setHistoryIndex(0);
+    setSessionStatus("finished");
+  }, [indicadores.status_corrida, gridSize]);
 
   return (
     <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
@@ -200,7 +231,7 @@ export default function MazeViewer() {
             className="rounded-lg bg-zinc-950 px-3 py-2 text-xs font-semibold text-white transition hover:bg-zinc-800"
             onClick={startSession}
           >
-            Simular corrida
+            Limpar mapa
           </button>
           <button
             type="button"
@@ -320,6 +351,12 @@ export default function MazeViewer() {
                 <span>Sessao</span>
                 <span className="font-semibold text-zinc-900">
                   {sessionStatus}
+                </span>
+              </p>
+              <p className="flex items-center justify-between">
+                <span>Conexao</span>
+                <span className="font-semibold text-zinc-900">
+                  {statusConexao}
                 </span>
               </p>
               <p className="flex items-center justify-between">

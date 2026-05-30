@@ -170,7 +170,7 @@ export function useTelemetria(): UseTelemetriaReturn {
       try {
         const parsed = JSON.parse(event.data);
         const payload = parsed?.data ?? parsed;
-
+        console.log("[useTelemetria] Mensagem recebida INICIAL:", parsed);
         // Tratar erros enviados pelo backend
         if (parsed.type === "ERROR") {
           toast.error(parsed.message || "Erro na telemetria", {
@@ -204,6 +204,7 @@ export function useTelemetria(): UseTelemetriaReturn {
           parsed?.type === "MOVIMENTACAO_PAREDES" ||
           isMovimentacaoPayload(payload)
         ) {
+          // console.log("[useTelemetria] Movimentação recebida:", payload);
           if (isMovimentacaoPayload(payload)) {
             setUltimaMovimentacao({
               ...payload,
@@ -225,6 +226,14 @@ export function useTelemetria(): UseTelemetriaReturn {
           setIndicadores(pacote as IndicadoresDesempenho);
           setStatusConexao("online");
           setMensagemStatusConexao(null);
+          // console.log("Payload: ", payload);
+          // console.log("Pacote ", pacote);
+          if (isMovimentacaoPayload(payload)) {
+            setUltimaMovimentacao({
+              ...payload,
+              paredes: decodificarParedes(payload.w),
+            });
+          }
         }
       } catch (e) {
         console.error("[useTelemetria] Erro ao processar mensagem:", e);
