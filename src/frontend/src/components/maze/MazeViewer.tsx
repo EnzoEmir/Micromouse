@@ -193,10 +193,6 @@ export default function MazeViewer() {
           <h2 className="text-xl font-semibold text-zinc-950">
             Mapa de navegacao em tempo real
           </h2>
-          <p className="mt-1 text-sm text-zinc-500">
-            Sinal vivo da corrida com rastreio de paredes, celulas visitadas e
-            historico de rotas.
-          </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button

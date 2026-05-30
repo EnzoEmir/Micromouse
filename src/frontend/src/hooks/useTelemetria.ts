@@ -19,6 +19,22 @@ import { WS_TELEMETRIA_URL } from "../services/telemetria";
 
 type StatusConexaoMicromouse = "online" | "offline" | "waiting";
 
+type MovimentacaoTelemetria = {
+  id_corrida: number;
+  timestamp_ms: number;
+  x: number;
+  y: number;
+  w: number;
+  paredes: ParedesCelula;
+};
+
+type ParedesCelula = {
+  norte: boolean;
+  sul: boolean;
+  leste: boolean;
+  oeste: boolean;
+};
+
 /** Estado inicial dos indicadores (espelha criar_estado_inicial do backend). */
 const ESTADO_INICIAL: IndicadoresDesempenho = {
   id_corrida_banco: null,
@@ -59,6 +75,8 @@ export interface UseTelemetriaReturn {
   conectado: boolean;
   /** Última mensagem de erro, se houver. */
   erro: string | null;
+  /** Ultima movimentacao recebida (mudanca de celula). */
+  ultimaMovimentacao: MovimentacaoTelemetria | null;
 }
 
 export function useTelemetria(): UseTelemetriaReturn {
@@ -78,11 +96,52 @@ export function useTelemetria(): UseTelemetriaReturn {
   const [erro, setErro] = useState<string | null>(null);
   const [statusConexao, setStatusConexao] =
     useState<StatusConexaoMicromouse>("waiting");
-  const [mensagemStatusConexao, setMensagemStatusConexao] = useState<string | null>(null);
-
+  const [mensagemStatusConexao, setMensagemStatusConexao] = useState<
+    string | null
+  >(null);
+  const [ultimaMovimentacao, setUltimaMovimentacao] =
+    useState<MovimentacaoTelemetria | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Decodifica o inteiro de paredes (w) em um binário para identificar as paredes presentes na célula.
+  const decodificarParedes = useCallback((w: number): ParedesCelula => {
+    // o "&" é o operador bit-a-bit AND. Ele “pega” apenas o bit indicado.
+    return {
+      norte: (w & 1) === 1, //Se (w & 1) === 1, o bit 0 esta ligado → parede ao norte.
+      sul: (w & 2) === 2, //Se (w & 2) === 2, o bit 1 esta ligado → parede ao sul.
+      leste: (w & 4) === 4, //Se (w & 4) === 4, o bit 2 esta ligado → parede ao leste.
+      oeste: (w & 8) === 8, //Se (w & 8) === 8, o bit 3 esta ligado → parede ao oeste.
+    };
+  }, []);
+
+  const isMovimentacaoPayload = useCallback(
+    (
+      data: unknown,
+    ): data is {
+      id_corrida: number;
+      timestamp_ms: number;
+      x: number;
+      y: number;
+      w: number;
+    } => {
+      if (!data || typeof data !== "object") {
+        return false;
+      }
+
+      const payload = data as Record<string, unknown>;
+
+      return (
+        typeof payload.id_corrida === "number" &&
+        typeof payload.timestamp_ms === "number" &&
+        typeof payload.x === "number" &&
+        typeof payload.y === "number" &&
+        typeof payload.w === "number"
+      );
+    },
+    [],
+  );
 
   //Persistir estado no localStorage para manter dados entre recarregamentos
   useEffect(() => {
@@ -110,7 +169,8 @@ export function useTelemetria(): UseTelemetriaReturn {
     ws.onmessage = (event) => {
       try {
         const parsed = JSON.parse(event.data);
-        
+        const payload = parsed?.data ?? parsed;
+
         // Tratar erros enviados pelo backend
         if (parsed.type === "ERROR") {
           toast.error(parsed.message || "Erro na telemetria", {
@@ -120,17 +180,36 @@ export function useTelemetria(): UseTelemetriaReturn {
         }
 
         if (parsed.type === "CONNECTION_STATUS") {
-          setStatusConexao(parsed.data?.status === "offline" ? "offline" : "online");
+          setStatusConexao(
+            parsed.data?.status === "offline" ? "offline" : "online",
+          );
           setMensagemStatusConexao(parsed.data?.message ?? null);
           return;
         }
 
         if (parsed.type === "SESSAO_ENCERRADA") {
-          console.log("[useTelemetria] Sessão anterior encerrada:", parsed.data);
+          console.log(
+            "[useTelemetria] Sessão anterior encerrada:",
+            parsed.data,
+          );
           setIndicadores(ESTADO_INICIAL);
           setConfigSessao(CONFIG_SESSAO_INICIAL);
           setStatusConexao("waiting");
           setMensagemStatusConexao(null);
+          return;
+        }
+
+        if (
+          parsed?.type === "MOVIMENTACAO" ||
+          parsed?.type === "MOVIMENTACAO_PAREDES" ||
+          isMovimentacaoPayload(payload)
+        ) {
+          if (isMovimentacaoPayload(payload)) {
+            setUltimaMovimentacao({
+              ...payload,
+              paredes: decodificarParedes(payload.w),
+            });
+          }
           return;
         }
 
@@ -199,5 +278,6 @@ export function useTelemetria(): UseTelemetriaReturn {
     enviarPacote,
     conectado,
     erro,
+    ultimaMovimentacao,
   };
 }
