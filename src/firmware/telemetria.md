@@ -2,23 +2,32 @@
 
 ---
 
+O campo `tipo` está sempre presente como **primeiro campo** de todos os pacotes, permitindo que o web identifique o tipo sem precisar inspecionar o conteúdo restante.
+
+| `tipo` | Pacote |
+|--------|--------|
+| `0` | Configuração Inicial |
+| `1` | Movimentação / Descoberta de Paredes |
+| `2` | Rota Otimizada |
+| `3` | Fim de Corrida |
+
+---
+
 ## 1. Configuração Inicial (Disparado uma única vez na largada)
 Envia o tamanho do labirinto e o número da tentativa para preparar a interface web.
 
 ```json
 {
-  "id_corrida": 1,
+  "tipo": 0,
   "timestamp_ms": 0,
   "dimensao": 4,
-  "tentativa": 1
   "bateria": 100
 }
 ```
 
-- id_corrida (int): Identificador da corrida/sessao atual para correlacionar todos os pacotes enviados.
+- tipo (int): Identificador do tipo de pacote (0 = Configuração Inicial).
 - timestamp_ms (int): Timestamp relativo ao inicio da corrida, em milissegundos.
 - dimensao (int): Tamanho do labirinto atual. Enviar 4 para 4x4, 8 para 8x8 ou 16 para 16x16.
-- tentativa (int): Número da tentativa atual no labirinto (valores de 1, 2 ou 3).
 - bateria (int): Porcentagem estimada restante da bateria no inicio do teste (de 0 a 100).
 
 ## Convenção Espacial e de Coordenadas 
@@ -38,11 +47,10 @@ Para alinhar perfeitamente a lógica matemática do firmware em C++ com a render
 ## 2. Movimentação e Descoberta de Paredes (Disparado APENAS ao mudar de célula)
 
 Em vez de enviar dados por tempo (streaming contínuo), o ESP32 enviará este pacote pequeno somente quando o robô efetivamente entrar em uma nova célula durante a exploração (Frontier-Based).
-JSON
 
 ```json
 {
-  "id_corrida": 1,
+  "tipo": 1,
   "timestamp_ms": 1234,
   "x": 2,
   "y": 1,
@@ -50,7 +58,7 @@ JSON
 }
 ```
 
-- id_corrida (int): Identificador da corrida/sessao atual para correlacionar todos os pacotes enviados.
+- tipo (int): Identificador do tipo de pacote (1 = Movimentação / Descoberta de Paredes).
 - timestamp_ms (int): Timestamp relativo ao inicio da corrida, em milissegundos.
 - x (int): Coordenada X atual do robô no labirinto, seguindo a convenção definida acima.
 - y (int): Coordenada Y atual do robô no labirinto, seguindo a convenção definida acima.
@@ -70,28 +78,26 @@ A equipe web deve ler o valor inteiro e decodificar os bits para desenhar as par
 ## 3. Rota Otimizada (Disparado uma única vez após o cálculo do Floodfill)
 
 Envia a lista sequencial de coordenadas que formam o caminho perfeito calculado pelo algoritmo antes de iniciar a corrida rápida (Fast Run).
-JSON
 
 ```json
 {
-  "id_corrida": 1,
+  "tipo": 2,
   "timestamp_ms": 9000,
   "rota": [[0,0], [0,1], [0,2], [1,2], [2,2]]
 }
 ```
 
-- id_corrida (int): Identificador da corrida/sessao atual para correlacionar todos os pacotes enviados.
+- tipo (int): Identificador do tipo de pacote (2 = Rota Otimizada).
 - timestamp_ms (int): Timestamp relativo ao inicio da corrida, em milissegundos.
 - rota (array de arrays): Coordenadas consecutivas [x, y] do início ao fim do trajeto ideal. O site usará isso para desenhar a linha do caminho ótimo na tela.
 
 ## 4. Fim de Corrida / Consolidação (Disparado uma única vez ao terminar/falhar)
 
 Contém os dados consolidados exigidos pelos professores. Este pacote fecha a rodada e deve ser salvo de forma permanente no banco de dados.
-JSON
 
 ```json
 {
-  "id_corrida": 1,
+  "tipo": 3,
   "timestamp_ms": 14250,
   "sucesso": true,
   "v_med": 0.22,
@@ -99,7 +105,7 @@ JSON
 }
 ```
 
-- id_corrida (int): Identificador da corrida/sessao atual para correlacionar todos os pacotes enviados.
+- tipo (int): Identificador do tipo de pacote (3 = Fim de Corrida).
 - timestamp_ms (int): Timestamp relativo ao inicio da corrida, em milissegundos.
 - sucesso (boolean): true se o robô alcançou o centro autonomamente ou false se colidiu/desistiu.
 - v_med (float): Velocidade média final do percurso em metros por segundo.
