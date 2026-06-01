@@ -6,6 +6,8 @@ Tipos de pacote (campo ``tipo`` — int):
   - 1 → PacoteMovimentacao: movimentação / descoberta de paredes.
   - 2 → PacoteRota: rota otimizada calculada pelo Floodfill.
   - 3 → PacoteFinal: dados consolidados ao fim da corrida.
+  - 4 → PacoteHeartbeat: sinal periódico de vida da conexão.
+  - 5 → PacoteAlertaTemperatura: alerta crítico de temperatura.
 
 Schemas auxiliares:
   - IndicadoresDesempenho: estado consolidado dos indicadores do dashboard.
@@ -43,6 +45,8 @@ class TipoPacote(int, enum.Enum):
     MOVIMENTACAO = 1
     ROTA = 2
     FINAL = 3
+    HEARTBEAT = 4
+    ALERTA_TEMPERATURA = 5
     INVALIDO = -1
 
 
@@ -51,6 +55,7 @@ class TipoAlertaTelemetria(str, enum.Enum):
 
     BATERIA_CRITICA = "bateria_critica"
     POSSIVEL_PARADA_INESPERADA = "possivel_parada_inesperada"
+    TEMPERATURA_CRITICA = "temperatura_critica"
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +111,30 @@ class PacoteFinal(BaseModel):
     bateria: int = Field(ge=0, le=100)
 
 
+class PacoteHeartbeat(BaseModel):
+    """Sinal periódico de vida da conexão (tipo=4).
+
+    Enviado a cada 1,5 segundos. Permite detectar conexão perdida e
+    monitorar nível de bateria ao longo da corrida.
+    """
+
+    tipo: int = Field(4)
+    timestamp_ms: int = Field(ge=0)
+    bateria: int = Field(ge=0, le=100)
+
+
+class PacoteAlertaTemperatura(BaseModel):
+    """Alerta crítico de temperatura (tipo=5).
+
+    Enviado imediatamente quando a temperatura ultrapassa o limiar seguro.
+    A corrida é interrompida automaticamente após este pacote.
+    """
+
+    tipo: int = Field(5)
+    timestamp_ms: int = Field(ge=0)
+    temp_c: float
+
+
 class AlertaTelemetria(BaseModel):
     """Registro técnico de um alerta crítico detectado."""
 
@@ -136,6 +165,7 @@ class IndicadoresDesempenho(BaseModel):
     alerta_bateria_critica: bool = False
     alerta_possivel_parada_inesperada: bool = False
     alerta_dado_invalido: bool = False
+    alerta_temperatura_critica: bool = False
     log_alertas: list[AlertaTelemetria] = Field(default_factory=list)
 
     # --- Campos internos para cálculo acumulado de velocidade ---

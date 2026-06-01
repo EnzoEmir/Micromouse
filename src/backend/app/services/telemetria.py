@@ -44,6 +44,8 @@ _TIPO_MAP: dict[int, TipoPacote] = {
     1: TipoPacote.MOVIMENTACAO,
     2: TipoPacote.ROTA,
     3: TipoPacote.FINAL,
+    4: TipoPacote.HEARTBEAT,
+    5: TipoPacote.ALERTA_TEMPERATURA,
 }
 """Tempo mínimo em ms para considerar uma parada inesperada."""
 
@@ -118,6 +120,10 @@ def validar_pacote(
         _validar_pacote_rota(packet, erros)
     elif tipo == TipoPacote.FINAL:
         _validar_pacote_final(packet, erros)
+    elif tipo == TipoPacote.HEARTBEAT:
+        _validar_pacote_heartbeat(packet, erros)
+    elif tipo == TipoPacote.ALERTA_TEMPERATURA:
+        _validar_pacote_alerta_temperatura(packet, erros)
 
     return ResultadoValidacao(valido=len(erros) == 0, erros=erros)
 
@@ -212,10 +218,26 @@ def _validar_pacote_final(packet: dict, erros: list[str]) -> None:
         erros.append(f"Bateria fora do range [0, 100] (recebido: {bateria}).")
 
 
+def _validar_pacote_heartbeat(packet: dict, erros: list[str]) -> None:
+    """Valida campos do pacote Heartbeat (tipo=4)."""
+    bateria = packet.get("bateria")
+    if bateria is None:
+        erros.append("Campo 'bateria' ausente no pacote heartbeat.")
+    elif not isinstance(bateria, int):
+        erros.append(f"Campo 'bateria' deve ser um número inteiro (recebido: {bateria}).")
+    elif not (0 <= bateria <= 100):
+        erros.append(f"Bateria fora do range [0, 100] (recebido: {bateria}).")
 
-# ---------------------------------------------------------------------------
-# Cálculo de velocidade de um segmento
-# ---------------------------------------------------------------------------
+
+def _validar_pacote_alerta_temperatura(packet: dict, erros: list[str]) -> None:
+    """Valida campos do pacote Alerta Crítico de Temperatura (tipo=5)."""
+    temp_c = packet.get("temp_c")
+    if temp_c is None:
+        erros.append("Campo 'temp_c' ausente no pacote de alerta de temperatura.")
+    elif not isinstance(temp_c, (int, float)):
+        erros.append(f"Campo 'temp_c' deve ser numérico (recebido: {temp_c}).")
+
+
 
 
 def calcular_velocidade_segmento(
@@ -303,6 +325,10 @@ def atualizar_indicadores(
         _processar_pacote_movimentacao(novo_estado, pacote)
     elif tipo == TipoPacote.FINAL:
         _processar_pacote_final(novo_estado, pacote)
+    elif tipo == TipoPacote.HEARTBEAT:
+        _processar_pacote_heartbeat(novo_estado, pacote)
+    elif tipo == TipoPacote.ALERTA_TEMPERATURA:
+        _processar_pacote_alerta_temperatura(novo_estado, pacote)
 
     return novo_estado
 
@@ -412,6 +438,48 @@ def _processar_pacote_final(
         else StatusCorridaTelemetria.FALHA
     )
     _resetar_alerta_parada_inesperada(estado)
+
+
+def _processar_pacote_heartbeat(
+    estado: IndicadoresDesempenho, pacote: dict
+) -> None:
+    """Processa um Heartbeat (tipo=4): atualiza bateria e timestamp."""
+    estado.bateria_atual = pacote["bateria"]
+    estado.ultimo_timestamp_ms = pacote["timestamp_ms"]
+    _atualizar_alerta_bateria_critica(
+        estado,
+        bateria=pacote["bateria"],
+        timestamp_ms=pacote["timestamp_ms"],
+    )
+
+
+def _processar_pacote_alerta_temperatura(
+    estado: IndicadoresDesempenho, pacote: dict
+) -> None:
+    """Processa um Alerta Crítico de Temperatura (tipo=5).
+
+    Interrompe a corrida automaticamente e registra o alerta.
+    """
+    ts = pacote["timestamp_ms"]
+    temp_c = pacote["temp_c"]
+    estado.ultimo_timestamp_ms = ts
+
+    # Registrar alerta de temperatura crítica
+    _registrar_alerta(
+        estado,
+        tipo=TipoAlertaTelemetria.TEMPERATURA_CRITICA,
+        mensagem=f"Temperatura crítica detectada: {temp_c}°C.",
+        timestamp_ms=ts,
+    )
+    estado.alerta_temperatura_critica = True
+
+    # Interromper a corrida automaticamente
+    if estado.status_corrida == StatusCorridaTelemetria.EM_ANDAMENTO:
+        estado.status_corrida = StatusCorridaTelemetria.FALHA
+        estado.sucesso = False
+        estado.tempo_final_ms = ts
+        estado.tempo_decorrido_ms = ts
+        _resetar_alerta_parada_inesperada(estado)
 
 
 def _corrida_aceita_alerta_de_parada(estado: IndicadoresDesempenho) -> bool:

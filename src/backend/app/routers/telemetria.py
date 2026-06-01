@@ -236,6 +236,25 @@ async def receber_pacote_telemetria(
             session.commit()
             commit_realizado = True
 
+    # Se for heartbeat, apenas persistir eventuais alertas novos
+    if tipo == TipoPacote.HEARTBEAT and novo_estado.id_corrida_banco is not None:
+        if not commit_realizado and _persistir_novos_alertas(session, estado_atual, novo_estado):
+            session.commit()
+            commit_realizado = True
+
+    # Se for alerta de temperatura crítica, encerrar a corrida no banco
+    if tipo == TipoPacote.ALERTA_TEMPERATURA and novo_estado.id_corrida_banco is not None:
+        corrida = session.get(Corrida, novo_estado.id_corrida_banco)
+        if corrida and corrida.status_corrida == StatusCorrida.EM_ANDAMENTO:
+            corrida.status_corrida = StatusCorrida.ABORTADA
+            corrida.data_hora_fim = datetime.now(UTC)
+            corrida.bateria_final = novo_estado.bateria_atual
+            corrida.tempo_total = novo_estado.tempo_final_ms
+            session.add(corrida)
+            _persistir_novos_alertas(session, estado_atual, novo_estado)
+            session.commit()
+            commit_realizado = True
+
     if not commit_realizado and _persistir_novos_alertas(session, estado_atual, novo_estado):
         session.commit()
 
@@ -253,6 +272,19 @@ async def receber_pacote_telemetria(
                 "dimensao": tipo_lab.value if tipo_lab else None,
             }
         }
+    elif tipo == TipoPacote.HEARTBEAT:
+        evento = {
+            "type": "HEARTBEAT",
+            "data": estado_dict
+        }
+    elif tipo == TipoPacote.ALERTA_TEMPERATURA:
+        evento = {
+            "type": "ALERTA_TEMPERATURA_CRITICA",
+            "data": {
+                **estado_dict,
+                "temp_c": pacote.get("temp_c"),
+            }
+        }
     else:
         evento = {
             "type": "ATUALIZACAO_TELEMETRIA",
@@ -260,7 +292,7 @@ async def receber_pacote_telemetria(
         }
 
     await manager.send_json_to_all_clients(evento)
-    if tipo == TipoPacote.FINAL:
+    if tipo in (TipoPacote.FINAL, TipoPacote.ALERTA_TEMPERATURA):
         del estados_ativos[sessao_id]
         connection_monitor.remover_corrida(sessao_id)
         _set_sessao_ativa_id(None)
@@ -321,6 +353,7 @@ def _estado_to_dict(estado: IndicadoresDesempenho) -> dict:
         "alerta_bateria_critica": estado.alerta_bateria_critica,
         "alerta_possivel_parada_inesperada": estado.alerta_possivel_parada_inesperada,
         "alerta_dado_invalido": estado.alerta_dado_invalido,
+        "alerta_temperatura_critica": estado.alerta_temperatura_critica,
         "log_alertas": [
             alerta.model_dump(mode="json")
             for alerta in estado.log_alertas
