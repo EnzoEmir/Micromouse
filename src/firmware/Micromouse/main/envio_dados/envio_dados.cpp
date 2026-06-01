@@ -8,75 +8,18 @@
 
 static const char* TAG = "ENVIO_DADOS";
 
-const char* tipo_envio_para_string(TipoEnvio tipo) {
-    switch (tipo) {
-        case TipoEnvio::AvancoTile:       return "avanco_tile";
-        case TipoEnvio::Heartbeat:        return "heartbeat";
-        case TipoEnvio::InicioMapeamento: return "inicio_mapeamento";
-        case TipoEnvio::FinalMapeamento:  return "final_mapeamento";
-        case TipoEnvio::InicioCorrida:    return "inicio_corrida";
-        case TipoEnvio::FinalCorrida:     return "final_corrida";
+// Serializa `raiz` e faz o POST para `url`. Sempre consome (deleta) `raiz`,
+// inclusive em caso de erro, para não vazar a árvore JSON.
+static esp_err_t enviar_json(const char* url, cJSON* raiz) {
+    if (raiz == nullptr) {
+        ESP_LOGE(TAG, "Falha ao montar o objeto JSON");
+        return ESP_ERR_NO_MEM;
     }
-    return "desconhecido";
-}
-
-// Serializa a grade do labirinto como um array 2D (linha y x coluna x) com a
-// bitmask de paredes de cada célula. Retorna nullptr em caso de falha de alocação.
-static cJSON* serializar_matriz(const Labirinto& labirinto) {
-    const uint8_t n = labirinto.tamanho();
-
-    cJSON* matriz = cJSON_CreateArray();
-    if (matriz == nullptr) {
-        return nullptr;
-    }
-
-    for (uint8_t y = 0; y < n; ++y) {
-        cJSON* linha = cJSON_CreateArray();
-        if (linha == nullptr) {
-            cJSON_Delete(matriz);
-            return nullptr;
-        }
-        for (uint8_t x = 0; x < n; ++x) {
-            const Labirinto::Celula& c = labirinto.celula(x, y);
-            cJSON_AddItemToArray(linha, cJSON_CreateNumber(c.walls));
-        }
-        cJSON_AddItemToArray(matriz, linha);
-    }
-
-    return matriz;
-}
-
-esp_err_t enviar_dados_sensores(const char* url,
-                                const DadosEnvio& dados,
-                                const Labirinto& labirinto) {
     if (url == nullptr) {
         ESP_LOGE(TAG, "URL nula");
+        cJSON_Delete(raiz);
         return ESP_ERR_INVALID_ARG;
     }
-
-    cJSON* raiz = cJSON_CreateObject();
-    if (raiz == nullptr) {
-        ESP_LOGE(TAG, "Falha ao criar objeto JSON raiz");
-        return ESP_ERR_NO_MEM;
-    }
-
-    // Campos escalares (formato plano, todos no nível raiz)
-    cJSON_AddStringToObject(raiz, "tipo", tipo_envio_para_string(dados.tipo));
-    cJSON_AddNumberToObject(raiz, "velocidade_media_cms", dados.velocidade_media_cms);
-    cJSON_AddStringToObject(raiz, "direcao", dados.direcao != nullptr ? dados.direcao : "N");
-    cJSON_AddNumberToObject(raiz, "temperatura", dados.temperatura);
-    cJSON_AddNumberToObject(raiz, "soc", dados.soc);
-    cJSON_AddNumberToObject(raiz, "timestamp_ms", static_cast<double>(dados.timestamp_ms));
-
-    // Matriz do labirinto + dimensão (facilita o parse no backend)
-    cJSON* matriz = serializar_matriz(labirinto);
-    if (matriz == nullptr) {
-        ESP_LOGE(TAG, "Falha ao serializar matriz do labirinto");
-        cJSON_Delete(raiz);
-        return ESP_ERR_NO_MEM;
-    }
-    cJSON_AddItemToObject(raiz, "labirinto", matriz);
-    cJSON_AddNumberToObject(raiz, "labirinto_tamanho", labirinto.tamanho());
 
     char* json_string = cJSON_PrintUnformatted(raiz);
     cJSON_Delete(raiz);
@@ -111,4 +54,95 @@ esp_err_t enviar_dados_sensores(const char* url,
     esp_http_client_cleanup(client);
     cJSON_free(json_string);
     return err;
+}
+
+// Cria o objeto base com os campos comuns "tipo" e "timestamp_ms", presentes
+// em todos os pacotes. Retorna nullptr em caso de falha de alocação.
+static cJSON* novo_pacote(TipoPacote tipo, int64_t timestamp_ms) {
+    cJSON* raiz = cJSON_CreateObject();
+    if (raiz == nullptr) {
+        return nullptr;
+    }
+    cJSON_AddNumberToObject(raiz, "tipo", static_cast<int>(tipo));
+    cJSON_AddNumberToObject(raiz, "timestamp_ms", static_cast<double>(timestamp_ms));
+    return raiz;
+}
+
+esp_err_t enviar_configuracao_inicial(const char* url, int64_t timestamp_ms,
+                                      int dimensao, int bateria) {
+    cJSON* raiz = novo_pacote(TipoPacote::ConfiguracaoInicial, timestamp_ms);
+    if (raiz != nullptr) {
+        cJSON_AddNumberToObject(raiz, "dimensao", dimensao);
+        cJSON_AddNumberToObject(raiz, "bateria", bateria);
+    }
+    return enviar_json(url, raiz);
+}
+
+esp_err_t enviar_movimentacao(const char* url, int64_t timestamp_ms,
+                              int x, int y, uint8_t w) {
+    cJSON* raiz = novo_pacote(TipoPacote::Movimentacao, timestamp_ms);
+    if (raiz != nullptr) {
+        cJSON_AddNumberToObject(raiz, "x", x);
+        cJSON_AddNumberToObject(raiz, "y", y);
+        cJSON_AddNumberToObject(raiz, "w", w);
+    }
+    return enviar_json(url, raiz);
+}
+
+esp_err_t enviar_rota_otimizada(const char* url, int64_t timestamp_ms,
+                                const Labirinto::Coordenada* rota, uint16_t n) {
+    cJSON* raiz = novo_pacote(TipoPacote::RotaOtimizada, timestamp_ms);
+    if (raiz == nullptr) {
+        return enviar_json(url, raiz);  // loga e retorna ESP_ERR_NO_MEM
+    }
+
+    cJSON* arr = cJSON_CreateArray();
+    if (arr == nullptr) {
+        ESP_LOGE(TAG, "Falha ao criar o array da rota");
+        cJSON_Delete(raiz);
+        return ESP_ERR_NO_MEM;
+    }
+    if (rota != nullptr) {
+        for (uint16_t i = 0; i < n; ++i) {
+            cJSON* par = cJSON_CreateArray();
+            if (par == nullptr) {
+                ESP_LOGE(TAG, "Falha ao criar par [x,y] da rota");
+                cJSON_Delete(arr);
+                cJSON_Delete(raiz);
+                return ESP_ERR_NO_MEM;
+            }
+            cJSON_AddItemToArray(par, cJSON_CreateNumber(rota[i].x));
+            cJSON_AddItemToArray(par, cJSON_CreateNumber(rota[i].y));
+            cJSON_AddItemToArray(arr, par);
+        }
+    }
+    cJSON_AddItemToObject(raiz, "rota", arr);
+    return enviar_json(url, raiz);
+}
+
+esp_err_t enviar_fim_corrida(const char* url, int64_t timestamp_ms,
+                             bool sucesso, float v_med, int bateria) {
+    cJSON* raiz = novo_pacote(TipoPacote::FimDeCorrida, timestamp_ms);
+    if (raiz != nullptr) {
+        cJSON_AddBoolToObject(raiz, "sucesso", sucesso);
+        cJSON_AddNumberToObject(raiz, "v_med", v_med);
+        cJSON_AddNumberToObject(raiz, "bateria", bateria);
+    }
+    return enviar_json(url, raiz);
+}
+
+esp_err_t enviar_heartbeat(const char* url, int64_t timestamp_ms, int bateria) {
+    cJSON* raiz = novo_pacote(TipoPacote::Heartbeat, timestamp_ms);
+    if (raiz != nullptr) {
+        cJSON_AddNumberToObject(raiz, "bateria", bateria);
+    }
+    return enviar_json(url, raiz);
+}
+
+esp_err_t enviar_alerta_temperatura(const char* url, int64_t timestamp_ms, float temp_c) {
+    cJSON* raiz = novo_pacote(TipoPacote::AlertaTemperatura, timestamp_ms);
+    if (raiz != nullptr) {
+        cJSON_AddNumberToObject(raiz, "temp_c", temp_c);
+    }
+    return enviar_json(url, raiz);
 }

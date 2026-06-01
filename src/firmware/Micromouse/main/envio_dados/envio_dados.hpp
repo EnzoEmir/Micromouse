@@ -6,51 +6,95 @@
 #include "maze.hpp"
 
 /**
- * @brief Tipo do pacote de telemetria, indicando o evento que o originou.
+ * @brief Tipo do pacote de telemetria (campo "tipo" do JSON).
+ *
+ * Os valores inteiros e o layout de cada pacote seguem a especificação em
+ * src/firmware/telemetria.md. O campo "tipo" é sempre o primeiro do JSON,
+ * permitindo ao web identificar o pacote sem inspecionar o restante.
  */
-enum class TipoEnvio {
-    AvancoTile,        // Robô avançou uma célula (tile)
-    Heartbeat,         // Pacote periódico de manutenção da sessão
-    InicioMapeamento,  // Início da fase de mapeamento do labirinto
-    FinalMapeamento,   // Fim da fase de mapeamento do labirinto
-    InicioCorrida,     // Início da corrida pelo melhor caminho
-    FinalCorrida,      // Fim da corrida
+enum class TipoPacote : int {
+    ConfiguracaoInicial = 0,  // Disparado uma vez na largada
+    Movimentacao        = 1,  // Ao entrar em uma nova célula (descoberta de paredes)
+    RotaOtimizada       = 2,  // Uma vez, após o cálculo do flood fill
+    FimDeCorrida        = 3,  // Uma vez, ao terminar/falhar
+    Heartbeat           = 4,  // Periódico, enquanto o ESP32 estiver ativo
+    AlertaTemperatura   = 5,  // Temperatura acima do limiar crítico
 };
 
 /**
- * @brief Converte um TipoEnvio para a string usada no campo "tipo" do JSON.
+ * @brief Pacote 0 — Configuração Inicial.
+ *
+ * { "tipo":0, "timestamp_ms":..., "dimensao":..., "bateria":... }
+ *
+ * @param url          Endereço completo da API backend.
+ * @param timestamp_ms Tempo relativo ao início da corrida (ms).
+ * @param dimensao     Tamanho do labirinto (4, 8 ou 16).
+ * @param bateria      Porcentagem estimada de bateria no início (0 a 100).
  */
-const char* tipo_envio_para_string(TipoEnvio tipo);
+esp_err_t enviar_configuracao_inicial(const char* url, int64_t timestamp_ms,
+                                      int dimensao, int bateria);
 
 /**
- * @brief Conjunto de dados de telemetria enviado ao backend.
+ * @brief Pacote 1 — Movimentação / Descoberta de Paredes.
  *
- * A matriz do labirinto não entra aqui: ela é lida diretamente do objeto
- * Labirinto passado para enviar_dados_sensores().
+ * { "tipo":1, "timestamp_ms":..., "x":..., "y":..., "w":... }
+ *
+ * @param url          Endereço completo da API backend.
+ * @param timestamp_ms Tempo relativo ao início da corrida (ms).
+ * @param x            Coordenada X atual (origem [0,0] no canto inferior esquerdo).
+ * @param y            Coordenada Y atual (cresce para o Norte).
+ * @param w            Bitmask de paredes da célula (N=1, S=2, L=4, O=8).
  */
-struct DadosEnvio {
-    TipoEnvio tipo;              // Tipo/evento do pacote
-    float velocidade_media_cms;  // Velocidade média na célula atual (cm/s)
-    const char* direcao;         // Direção observada ("N", "S", "L", "O")
-    float temperatura;           // Temperatura do IMU (°C)
-    int soc;                     // Estado de carga da bateria (0 a 100 %)
-    int64_t timestamp_ms;        // Referência temporal da leitura (ms)
-};
+esp_err_t enviar_movimentacao(const char* url, int64_t timestamp_ms,
+                              int x, int y, uint8_t w);
 
 /**
- * @brief Monta um JSON plano com os dados de telemetria + a matriz do
- *        labirinto e envia via HTTP POST para a URL informada.
+ * @brief Pacote 2 — Rota Otimizada.
  *
- * A matriz é serializada como um array 2D (linha x coluna) de bitmasks de
- * paredes por célula (N=1, S=2, L=4, O=8).
+ * { "tipo":2, "timestamp_ms":..., "rota":[[x,y], ...] }
  *
- * @param url       Endereço completo da API backend.
- * @param dados     Estrutura com os dados escalares de telemetria.
- * @param labirinto Referência ao labirinto cuja matriz será serializada.
- * @return ESP_OK em caso de sucesso, ou um código de erro do esp_http_client.
+ * @param url          Endereço completo da API backend.
+ * @param timestamp_ms Tempo relativo ao início da corrida (ms).
+ * @param rota         Coordenadas consecutivas do início ao fim do trajeto ideal.
+ * @param n            Quantidade de coordenadas em `rota`.
  */
-esp_err_t enviar_dados_sensores(const char* url,
-                                const DadosEnvio& dados,
-                                const Labirinto& labirinto);
+esp_err_t enviar_rota_otimizada(const char* url, int64_t timestamp_ms,
+                                const Labirinto::Coordenada* rota, uint16_t n);
+
+/**
+ * @brief Pacote 3 — Fim de Corrida / Consolidação.
+ *
+ * { "tipo":3, "timestamp_ms":..., "sucesso":..., "v_med":..., "bateria":... }
+ *
+ * @param url          Endereço completo da API backend.
+ * @param timestamp_ms Tempo relativo ao início da corrida (ms).
+ * @param sucesso      true se alcançou o centro autonomamente, false se falhou.
+ * @param v_med        Velocidade média final do percurso (m/s).
+ * @param bateria      Porcentagem estimada de bateria no final (0 a 100).
+ */
+esp_err_t enviar_fim_corrida(const char* url, int64_t timestamp_ms,
+                             bool sucesso, float v_med, int bateria);
+
+/**
+ * @brief Pacote 4 — Heartbeat.
+ *
+ * { "tipo":4, "timestamp_ms":..., "bateria":... }
+ *
+ * @param url          Endereço completo da API backend.
+ * @param timestamp_ms Tempo relativo ao início da corrida (ms).
+ * @param bateria      Porcentagem estimada de bateria no momento do envio (0 a 100).
+ */
+esp_err_t enviar_heartbeat(const char* url, int64_t timestamp_ms, int bateria);
+
+/**
+ * @brief Pacote 5 — Alerta Crítico de Temperatura.
+ *
+ * { "tipo":5, "timestamp_ms":..., "temp_c":... }
+ *
+ * @param url          Endereço completo da API backend.
+ * @param timestamp_ms Tempo relativo ao início da corrida (ms).
+ * @param temp_c       Temperatura atual medida pelo sensor (°C).
+ */
+esp_err_t enviar_alerta_temperatura(const char* url, int64_t timestamp_ms, float temp_c);
 
 #endif // ENVIO_DADOS_HPP

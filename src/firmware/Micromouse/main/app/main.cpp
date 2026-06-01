@@ -47,6 +47,11 @@ constexpr int   TURN_PWM           = PWM_MAX / 3; // velocidade de giro
 constexpr float TURN_TARGET_RAD    = M_PI / 2.0f; // 90 graus por passo de giro
 constexpr float KP_STRAIGHT        = 3.0f;        // ganho da correcao reta (encoder)
 
+// Tamanho fisico aproximado de uma celula (~18 cm); usado para estimar v_med.
+constexpr float CELL_SIZE_M        = 0.18f;
+// Limiar de temperatura do IMU acima do qual a corrida e abortada (alerta tipo 5).
+constexpr float TEMP_CRITICA_C     = 60.0f;       // CALIBRAR conforme o hardware
+
 //  Recursos compartilhados
 SemaphoreHandle_t g_i2c_mutex = nullptr;   // serializa o barramento I2C
 
@@ -116,13 +121,11 @@ const int8_t kHeadingDy[4] = {+1, 0, -1, 0};
 portMUX_TYPE g_snap_mux = portMUX_INITIALIZER_UNLOCKED;
 int   g_snap_soc        = 100;
 float g_snap_temp       = 0.0f;
-const char* g_snap_dir  = "N";
 
-void atualizarSnapshot(int soc, float temp, const char* dir) {
+void atualizarSnapshot(int soc, float temp) {
     portENTER_CRITICAL(&g_snap_mux);
     g_snap_soc  = soc;
     g_snap_temp = temp;
-    g_snap_dir  = dir;
     portEXIT_CRITICAL(&g_snap_mux);
 }
 
@@ -366,15 +369,19 @@ void battery_task(void*) {
 }
 
 void telemetria_task(void*) {
-    // Conecta ao Wi-Fi (bloqueante) e envia o pacote inicial.
-    g_telemetria.inicializar(WIFI_SSID, WIFI_PASS, g_labirinto);
+    // Conecta ao Wi-Fi (bloqueante) e envia a configuracao inicial (tipo 0).
+    int soc;
+    portENTER_CRITICAL(&g_snap_mux);
+    soc = g_snap_soc;
+    portEXIT_CRITICAL(&g_snap_mux);
+    g_telemetria.inicializar(WIFI_SSID, WIFI_PASS, g_labirinto, soc);
+
     const TickType_t delay = pdMS_TO_TICKS(500);
     while (true) {
-        int soc; float temp; const char* dir;
         portENTER_CRITICAL(&g_snap_mux);
-        soc = g_snap_soc; temp = g_snap_temp; dir = g_snap_dir;
+        soc = g_snap_soc;
         portEXIT_CRITICAL(&g_snap_mux);
-        g_telemetria.verificar_heartbeat(g_labirinto, soc, dir, temp);
+        g_telemetria.verificar_heartbeat(soc);
         vTaskDelay(delay);
     }
 }
@@ -399,14 +406,39 @@ void navegacao_task(void*) {
 
     ESP_LOGI(TAG, "=== Iniciando exploracao por flood fill ===");
 
+    // Referencias para estimar a velocidade media (pacote de fim de corrida).
+    const int64_t t_corrida_us = esp_timer_get_time();
+    int avancos = 0;
+    auto velocidade_media = [&]() -> float {  // m/s
+        const float dt_s = (esp_timer_get_time() - t_corrida_us) / 1e6f;
+        return dt_s > 0.0f ? (avancos * CELL_SIZE_M) / dt_s : 0.0f;
+    };
+
     while (true) {
         // 1. Percebe as paredes na celula atual e registra no mapa.
         sentirEAtualizarMapa();
+
+        // Telemetria (tipo 1): reporta a celula recem-visitada e suas paredes.
+        g_telemetria.movimento(g_pose.x, g_pose.y,
+                               g_labirinto.celula(g_pose.x, g_pose.y).walls);
 
         // 2. Verifica se chegou na meta.
         if (g_labirinto.estaNaChegada(g_pose.x, g_pose.y)) {
             ESP_LOGI(TAG, "*** META ALCANCADA em (%u,%u) ***", g_pose.x, g_pose.y);
             motores_para();
+
+            // Telemetria (tipo 2): rota otima do flood fill, de (0,0) ate a meta.
+            g_labirinto.executarFloodFill();
+            Labirinto::Coordenada rota[Labirinto::kMaxCaminho];
+            uint16_t rota_len = 0;
+            if (g_labirinto.melhorCaminho({0, 0}, rota, Labirinto::kMaxCaminho, &rota_len)) {
+                g_telemetria.rota_otimizada(rota, rota_len);
+            } else {
+                ESP_LOGW(TAG, "Nao foi possivel extrair a rota otima.");
+            }
+
+            // Telemetria (tipo 3): fim de corrida com sucesso.
+            g_telemetria.fim_corrida(true, velocidade_media(), g_snap_soc);
             break;
         }
 
@@ -417,18 +449,28 @@ void navegacao_task(void*) {
             ESP_LOGW(TAG, "Sem vizinho melhor em (%u,%u). Encerrando.",
                      g_pose.x, g_pose.y);
             motores_para();
+            // Telemetria (tipo 3): fim de corrida sem sucesso.
+            g_telemetria.fim_corrida(false, velocidade_media(), g_snap_soc);
             break;
         }
 
         // 4. Gira para a direcao escolhida e avanca uma celula.
         virarPara(destino);
-        atualizarSnapshot(g_snap_soc, g_snap_temp, nomeDirecao(g_pose.heading));
         avancarUmaCelula();
+        ++avancos;
 
-        // Atualiza temperatura do IMU para a telemetria.
+        // Atualiza a temperatura do IMU para a telemetria.
         float temp = g_snap_temp;
         lerGyroZ(&temp);
-        atualizarSnapshot(g_snap_soc, temp, nomeDirecao(g_pose.heading));
+        atualizarSnapshot(g_snap_soc, temp);
+
+        // Telemetria (tipo 5): aborta a corrida em caso de superaquecimento.
+        if (temp >= TEMP_CRITICA_C) {
+            ESP_LOGE(TAG, "Temperatura critica: %.1f C. Abortando corrida.", temp);
+            motores_para();
+            g_telemetria.alerta_temperatura(temp);
+            break;
+        }
     }
 
     ESP_LOGI(TAG, "Navegacao finalizada. Robo parado.");
