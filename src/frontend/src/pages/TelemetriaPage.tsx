@@ -15,6 +15,8 @@ export function TelemetriaPage({
   onNavigateLabirinto,
   onNavigateEstados,
 }: TelemetriaPageProps) {
+  const telemetria = useTelemetria();
+
   return (
     <MonitoringLayout
       activeView={activeView}

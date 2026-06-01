@@ -6,6 +6,8 @@ type MonitoringLayoutProps = {
   eyebrow: string;
   title: string;
   description: string;
+  statusConexao: "online" | "offline" | "waiting";
+  mensagemStatusConexao?: string | null;
   children: React.ReactNode;
 };
 
@@ -17,6 +19,8 @@ export function MonitoringLayout({
   eyebrow,
   title,
   description,
+  statusConexao,
+  mensagemStatusConexao,
   children,
 }: MonitoringLayoutProps) {
   const exibindoLabirinto = activeView === "labirinto";

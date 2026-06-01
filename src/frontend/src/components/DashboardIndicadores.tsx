@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-import { useTelemetria } from "../hooks/useTelemetria";
+import { useTelemetria, type UseTelemetriaReturn } from "../hooks/useTelemetria";
 import {
   CriticalAlertModal,
   type CriticalAlertType,
@@ -11,16 +11,6 @@ type StatusCorrida =
   | "em_andamento"
   | "concluida"
   | "abortada";
-
-type IndicadoresTelemetria = {
-  bateria_atual?: number | null;
-  velocidade_media?: number | null;
-  tempo_decorrido_ms?: number | null;
-  tempo_final_ms?: number | null;
-  status_corrida?: StatusCorrida | string | null;
-  ultimo_timestamp_ms?: number | null;
-  alerta_possivel_parada_inesperada?: boolean | null;
-};
 
 const LIMITE_BATERIA_CRITICA = 10;
 const LIMITE_SEM_TELEMETRIA_MS = 3000;
@@ -104,11 +94,18 @@ const CardIndicador: React.FC<CardIndicadorProps> = ({
   );
 };
 
-export const DashboardIndicadores: React.FC = () => {
-  const { indicadores, conectado } = useTelemetria() as {
-    indicadores?: IndicadoresTelemetria | null;
-    conectado: boolean;
-  };
+type DashboardIndicadoresProps = {
+  telemetria?: Partial<UseTelemetriaReturn>;
+};
+
+export const DashboardIndicadores: React.FC<DashboardIndicadoresProps> = ({
+  telemetria,
+}) => {
+  const telemetriaHook = useTelemetria();
+  const {
+    indicadores,
+    conectado,
+  } = (telemetria ?? telemetriaHook) as UseTelemetriaReturn;
 
   const [alertaSemSinal, setAlertaSemSinal] = useState(false);
   const [alertaCritico, setAlertaCritico] = useState<{
@@ -143,18 +140,20 @@ export const DashboardIndicadores: React.FC = () => {
   }, [corridaConcluida, tempoDecorridoMs, tempoFinalMs]);
 
   useEffect(() => {
-    if (!indicadores || statusCorrida !== "em_andamento") {
+    let timer: number | undefined;
+
+    if (indicadores && statusCorrida === "em_andamento") {
       setAlertaSemSinal(false);
-      return;
+      timer = window.setTimeout(() => {
+        setAlertaSemSinal(true);
+      }, LIMITE_SEM_TELEMETRIA_MS);
+    } else {
+      setAlertaSemSinal(false);
     }
 
-    setAlertaSemSinal(false);
-
-    const timer = window.setTimeout(() => {
-      setAlertaSemSinal(true);
-    }, LIMITE_SEM_TELEMETRIA_MS);
-
-    return () => window.clearTimeout(timer);
+    return () => {
+      if (timer) window.clearTimeout(timer);
+    };
   }, [indicadores, statusCorrida, ultimoTimestampMs]);
 
   useEffect(() => {
@@ -234,7 +233,7 @@ export const DashboardIndicadores: React.FC = () => {
         <div className="mb-5 space-y-3">
           {bateriaCritica && (
             <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-800">
-              ⚠️ Bateria crítica: nível em {LIMITE_BATERIA_CRITICA}% ou menos.
+              ⚠️ Bateria crítica: nível em {bateriaAtual?.toFixed(1)}% ou menos.
             </div>
           )}
 

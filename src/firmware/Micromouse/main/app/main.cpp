@@ -9,16 +9,28 @@
 #include "imu.h"
 #include "motor/motor.hpp"
 #include "pins.hpp"
-#include "sd_card.hpp"
 #include "vl53l0x/IV_Vl53l0x.hpp"
+#include "maze.hpp"
+#include "telemetria.hpp"
 
 namespace {
+
+// Configurações da Rede (Trocar pelos REAIS depois)
+const char* WIFI_SSID = "NOME_DO_SEU_WIFI";
+const char* WIFI_PASS = "SENHA_DO_SEU_WIFI";
+const char* BACKEND_URL = "http://192.168.1.50:8000/api/telemetria"; // Use o IP do  PC
 
 Battery g_battery;
 IV_Vl53l0x g_tof;
 Motor *g_motor_left = nullptr;
 Motor *g_motor_right = nullptr;
 volatile float g_tof_distance_mm = -1.0f;
+
+// 1,5 segundos de Heartbeat
+Telemetria g_telemetria(BACKEND_URL, 1500);
+
+// Mapa do labirinto compartilhado, serializado junto a cada pacote de telemetria.
+Labirinto g_labirinto;
 
 struct BatterySnapshot {
     float voltage;
@@ -37,9 +49,6 @@ portMUX_TYPE g_imu_snapshot_mux = portMUX_INITIALIZER_UNLOCKED;
 BatterySnapshot g_battery_snapshot = {};
 DadosIMU g_imu_snapshot = {};
 bool g_imu_snapshot_valid = false;
-
-// Fila para dados -> SD
-QueueHandle_t g_data_queue = nullptr;
 
 
 void cacheBatterySnapshot() {
@@ -129,60 +138,31 @@ void motor_task(void *) {
 }
 
 
-void data_aggregation_task(void *) {
-    const TickType_t delay = pdMS_TO_TICKS(500);
-    static uint32_t tick_ms = 0;
+// TELEMETRIA
+void telemetria_task(void *) {
+    // Conecta ao Wi-Fi (bloqueante) e envia o pacote de inicio de mapeamento.
+    g_telemetria.inicializar(WIFI_SSID, WIFI_PASS, g_labirinto);
+
+    const TickType_t delay = pdMS_TO_TICKS(500); // Verifica a cada 0,5s p/ honrar o heartbeat de 1,5s
 
     while (true) {
-        if (!g_data_queue) {
-            vTaskDelay(delay);
-            continue;
-        }
-
-        // Coleta dados de todos os sensores
-        RobotData data = {};
-        data.timestamp_ms = tick_ms;
-        data.distancia_tof[0] = static_cast<int>(g_tof_distance_mm);
-        data.distancia_tof[1] = 0;
-        data.distancia_tof[2] = 0;
-        data.distancia_tof[3] = 0;
-        BatterySnapshot battery_snapshot = {};
+        BatterySnapshot bat = {};
         portENTER_CRITICAL(&g_battery_snapshot_mux);
-        battery_snapshot = g_battery_snapshot;
+        bat = g_battery_snapshot;
         portEXIT_CRITICAL(&g_battery_snapshot_mux);
-        data.battery_v = battery_snapshot.voltage;
-        data.battery_i = battery_snapshot.current;
-        data.battery_power = battery_snapshot.power;
-        data.battery_soc = battery_snapshot.soc;
 
-        DadosIMU imu_snapshot = {};
-        bool imu_snapshot_valid = false;
+        DadosIMU imu = {};
         portENTER_CRITICAL(&g_imu_snapshot_mux);
-        imu_snapshot = g_imu_snapshot;
-        imu_snapshot_valid = g_imu_snapshot_valid;
+        imu = g_imu_snapshot;
         portEXIT_CRITICAL(&g_imu_snapshot_mux);
 
-        if (imu_snapshot_valid) {
-            data.accel_x = imu_snapshot.accel_x;
-            data.accel_y = imu_snapshot.accel_y;
-            data.accel_z = imu_snapshot.accel_z;
-            data.gyro_x = imu_snapshot.gyro_x;
-            data.gyro_y = imu_snapshot.gyro_y;
-            data.gyro_z = imu_snapshot.gyro_z;
-            data.imu_temp = imu_snapshot.temperatura;
-        }
+        // Mantém a sessão ativa na web enquanto o robô está parado ou pensando.
+        // Direção inicial padrão "N"; o estado do Wi-Fi é tratado dentro da Telemetria.
+        g_telemetria.verificar_heartbeat(g_labirinto,
+                                         static_cast<int>(bat.soc),
+                                         "N",
+                                         imu.temperatura);
 
-        if (g_motor_left && g_motor_right) {
-            data.encoder_left = g_motor_left->getEncoderCount();
-            data.encoder_right = g_motor_right->getEncoderCount();
-        }
-
-        // Enfileira os dados para o SD processar
-        if (xQueueSend(g_data_queue, &data, pdMS_TO_TICKS(10)) != pdTRUE) {
-            std::printf("[AVISO] Fila de dados cheia, registro descartado\n");
-        }
-
-        tick_ms += (uint32_t)delay;
         vTaskDelay(delay);
     }
 }
@@ -239,22 +219,6 @@ extern "C" void app_main(void) {
     g_motor_right->begin();
     std::printf("[OK] Motor direito inicializado\n");
 
-    // Criação de Fila de Dados
-    g_data_queue = xQueueCreate(50, sizeof(RobotData));
-    if (!g_data_queue) {
-        std::printf("[ERRO] Falha ao criar fila de dados\n");
-        return;
-    }
-    std::printf("[OK] Fila de dados criada\n");
-
-    // Inicialização do SD Card (passa a fila compartilhada)
-    sdCardInit(g_data_queue);
-    if (!estaCartaoSDOk()) {
-        std::printf("[AVISO] Cartão SD não disponível; lançando tasks mesmo assim\n");
-    } else {
-        std::printf("[OK] Cartão SD inicializado\n");
-    }
-
     // Criação de Tasks
     std::printf("\nLançando tasks...\n");
 
@@ -270,13 +234,12 @@ extern "C" void app_main(void) {
     xTaskCreatePinnedToCore(motor_task, "motor_task", 4096, nullptr, 3, nullptr, 0);
     std::printf("[OK] Task de motores criada\n");
 
-    xTaskCreatePinnedToCore(data_aggregation_task, "data_agg_task", 8192, nullptr, 4, nullptr, 1);
-    std::printf("[OK] Task de agregação de dados criada\n");
+    xTaskCreatePinnedToCore(telemetria_task, "telemetria_task", 8192, nullptr, 2, nullptr, 1);
+    std::printf("[OK] Task de telemetria criada\n");
 
     std::printf("\n=== Sistema Pronto ===\n");
     std::printf("Micromouse executando em multithread.\n\n");
 
-    // Task raiz aguarda indefinidamente
     while (true) {
         vTaskDelay(portMAX_DELAY);
     }
