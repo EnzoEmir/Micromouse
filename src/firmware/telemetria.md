@@ -10,6 +10,8 @@ O campo `tipo` está sempre presente como **primeiro campo** de todos os pacotes
 | `1` | Movimentação / Descoberta de Paredes |
 | `2` | Rota Otimizada |
 | `3` | Fim de Corrida |
+| `4` | Heartbeat |
+| `5` | Alerta Crítico de Temperatura |
 
 ---
 
@@ -113,6 +115,41 @@ Contém os dados consolidados exigidos pelos professores. Este pacote fecha a ro
 
 
 ***
+## 5. Heartbeat (Disparado periodicamente enquanto o ESP32 estiver ativo)
+
+Enviado em intervalos regulares (a cada 1,5 segundos) para indicar que a conexão com o ESP32 está viva. Se o web não receber este pacote dentro do intervalo esperado, deve exibir um aviso de conexão perdida.
+
+```json
+{
+  "tipo": 4,
+  "timestamp_ms": 5000,
+  "bateria": 95
+}
+```
+
+- tipo (int): Identificador do tipo de pacote (4 = Heartbeat).
+- timestamp_ms (int): Timestamp relativo ao inicio da corrida, em milissegundos.
+- bateria (int): Porcentagem estimada restante da bateria no momento do envio (de 0 a 100). Permite monitorar o consumo ao longo da corrida.
+
+> **Comportamento esperado no Web:** Se nenhum pacote de qualquer tipo (incluindo heartbeat) for recebido por mais de **3 segundos**, a interface deve exibir indicador visual de "Conexão Perdida".
+
+---
+
+## 6. Alerta Crítico de Temperatura (Disparado quando a temperatura ultrapassa o limiar seguro)
+
+Enviado imediatamente sempre que o sensor de temperatura detectar valor acima do limiar crítico configurado no firmware. A corrida é interrompida automaticamente após este pacote. O web deve exibir um alerta visual de emergência.
+
+```json
+{
+  "tipo": 5,
+  "timestamp_ms": 7800,
+  "temp_c": 61.0,
+}
+```
+
+- tipo (int): Identificador do tipo de pacote (5 = Alerta Crítico de Temperatura).
+- timestamp_ms (int): Timestamp relativo ao inicio da corrida, em milissegundos.
+- temp_c (float): Temperatura atual medida pelo sensor, em graus Celsius.
 
 ***
 
