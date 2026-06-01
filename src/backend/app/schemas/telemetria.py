@@ -1,10 +1,13 @@
 """
 Schemas Pydantic para pacotes de telemetria e indicadores de desempenho.
 
-Tipos de pacote:
-  - PacoteInicial: dados de início/configuração da corrida.
-  - PacoteMovimentacao: dados de movimentação durante a corrida.
-  - PacoteFinal: dados consolidados ao fim da corrida.
+Tipos de pacote (campo ``tipo`` — int):
+  - 0 → PacoteInicial: configuração inicial da corrida.
+  - 1 → PacoteMovimentacao: movimentação / descoberta de paredes.
+  - 2 → PacoteRota: rota otimizada calculada pelo Floodfill.
+  - 3 → PacoteFinal: dados consolidados ao fim da corrida.
+
+Schemas auxiliares:
   - IndicadoresDesempenho: estado consolidado dos indicadores do dashboard.
   - ResultadoValidacao: resultado da validação de um pacote.
 """
@@ -30,14 +33,17 @@ class StatusCorridaTelemetria(str, enum.Enum):
     FALHA = "falha"
 
 
-class TipoPacote(str, enum.Enum):
-    """Tipos de pacote de telemetria reconhecidos."""
+class TipoPacote(int, enum.Enum):
+    """Tipos de pacote de telemetria conforme telemetria.md.
 
-    INICIAL = "inicial"
-    MOVIMENTACAO = "movimentacao"
-    ROTA = "rota"
-    FINAL = "final"
-    INVALIDO = "invalido"
+    O campo ``tipo`` é o primeiro campo de todo pacote enviado pelo ESP32.
+    """
+
+    INICIAL = 0
+    MOVIMENTACAO = 1
+    ROTA = 2
+    FINAL = 3
+    INVALIDO = -1
 
 
 class TipoAlertaTelemetria(str, enum.Enum):
@@ -53,41 +59,51 @@ class TipoAlertaTelemetria(str, enum.Enum):
 
 
 class PacoteInicial(BaseModel):
-    """Pacote de início/configuração da corrida."""
+    """Pacote de configuração inicial (tipo=0).
 
-    id_corrida: int
+    Disparado uma única vez na largada.
+    """
+
+    tipo: int = Field(0)
     timestamp_ms: int = Field(ge=0)
-    dimensao: int | str
-    tentativa: int
-    bateria: float = Field(ge=0, le=100)
+    dimensao: int
+    bateria: int = Field(ge=0, le=100)
 
 
 class PacoteMovimentacao(BaseModel):
-    """Pacote de movimentação durante a corrida."""
+    """Pacote de movimentação / descoberta de paredes (tipo=1).
 
-    id_corrida: int
+    Disparado apenas ao mudar de célula.
+    """
+
+    tipo: int = Field(1)
     timestamp_ms: int = Field(ge=0)
-    x: int | float
-    y: int | float
-    w: int | float
-    bateria: float | None = Field(default=None, ge=0, le=100)
+    x: int
+    y: int
+    w: int = Field(ge=0, le=15)
 
 
 class PacoteRota(BaseModel):
-    """Pacote contendo a rota otimizada calculada."""
+    """Pacote contendo a rota otimizada calculada (tipo=2).
 
-    id_corrida: int
+    Disparado uma única vez após o cálculo do Floodfill.
+    """
+
+    tipo: int = Field(2)
     timestamp_ms: int = Field(ge=0)
-    rota: list[list[int | float]]
+    rota: list[list[int]]
 
 class PacoteFinal(BaseModel):
-    """Pacote consolidado ao fim da corrida."""
+    """Pacote consolidado ao fim da corrida (tipo=3).
 
-    id_corrida: int
+    Disparado uma única vez ao terminar/falhar.
+    """
+
+    tipo: int = Field(3)
     timestamp_ms: int = Field(ge=0)
     sucesso: bool
     v_med: float = Field(ge=0)
-    bateria: float = Field(ge=0, le=100)
+    bateria: int = Field(ge=0, le=100)
 
 
 class AlertaTelemetria(BaseModel):

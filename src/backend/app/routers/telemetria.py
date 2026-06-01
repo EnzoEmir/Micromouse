@@ -26,8 +26,27 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/telemetria", tags=["telemetria"])
 
-# Armazenamento em memória do estado das corridas ativas
+# ---------------------------------------------------------------------------
+# Estado em memória — sessão única ativa
+# ---------------------------------------------------------------------------
 estados_ativos: Dict[int, IndicadoresDesempenho] = {}
+_sessao_ativa_id: int | None = None
+_contador_sessao: int = 0
+
+
+def _gerar_sessao_id() -> int:
+    global _contador_sessao
+    _contador_sessao += 1
+    return _contador_sessao
+
+
+def _get_sessao_ativa_id() -> int | None:
+    return _sessao_ativa_id
+
+
+def _set_sessao_ativa_id(sid: int | None) -> None:
+    global _sessao_ativa_id
+    _sessao_ativa_id = sid
 
 
 @router.websocket("/ws")
@@ -74,28 +93,29 @@ async def receber_pacote_telemetria(
     """
     Endpoint HTTP para o Micromouse enviar pacotes de telemetria.
     Recebe o pacote, atualiza o estado em memória e notifica o Dashboard.
+
+    O ESP32 não envia ``id_corrida``; o backend gerencia uma sessão
+    única ativa por vez.
     """
     pacote = payload
     tipo = identificar_tipo_pacote(pacote)
 
-    # --- Registrar pacote no monitor de conexão e validar ---
-    await connection_monitor.registrar_pacote(pacote.get("id_corrida", 0))
-    
-    sessao_hardware_id = pacote.get("id_corrida")
-    tipo = identificar_tipo_pacote(pacote)
-    
-    # 2. Obtém o último timestamp se a sessão já existir (para validar regressão)
-    ultimo_ts = None
-    if isinstance(sessao_hardware_id, int) and sessao_hardware_id in estados_ativos:
-        ultimo_ts = estados_ativos[sessao_hardware_id].ultimo_timestamp_ms
+    # --- Validação inicial ---
+    sessao_id = _get_sessao_ativa_id()
 
-    # 3. BARREIRA DE VALIDAÇÃO RIGOROSA
+    # Determinar último timestamp para validar regressão
+    ultimo_ts = None
+    if sessao_id is not None and sessao_id in estados_ativos:
+        ultimo_ts = estados_ativos[sessao_id].ultimo_timestamp_ms
+    # Pacote inicial reseta o timestamp
+    if tipo == TipoPacote.INICIAL:
+        ultimo_ts = None
+
     resultado = validar_pacote(pacote, tipo, ultimo_ts)
     if not resultado.valido:
         erros_str = ", ".join(resultado.erros)
         logger.warning("Pacote REJEITADO por falha na validação: %s", erros_str)
-        
-        # Notificar o dashboard sobre o erro de validação
+
         await manager.send_json_to_all_clients({
             "type": "ERROR",
             "message": f"Dados inválidos do robô: {erros_str}"
@@ -106,34 +126,34 @@ async def receber_pacote_telemetria(
             detail={"mensagem": "Pacote descartado", "erros": resultado.erros},
         )
 
-    # 4. Gerenciamento de Sessão: Encerrar anteriores se for um novo pacote inicial
-    if tipo == TipoPacote.INICIAL and sessao_hardware_id not in estados_ativos:
-        await _abortar_corridas_ativas(session, sessao_hardware_id)
+    # --- Gerenciamento de sessão ---
+    if tipo == TipoPacote.INICIAL:
+        # Encerrar qualquer corrida ativa anterior
+        if sessao_id is not None and sessao_id in estados_ativos:
+            await _abortar_corrida_ativa(session, sessao_id)
 
-    elif tipo == TipoPacote.INICIAL and sessao_hardware_id in estados_ativos:
-        # Recebimento de pacote INICIAL com um `sessao_hardware_id` já em uso.
-        # Enviar notificação de erro ao dashboard e retornar uma exceção
-        logger.error("Pacote INICIAL rejeitado: id de sessão repetido %s", sessao_hardware_id)
-        await manager.send_json_to_all_clients({
-            "type": "ERROR",
-            "message": f"ID de sessão repetido recebido: {sessao_hardware_id}. Pacote INICIAL rejeitado."
-        })
-        raise HTTPException(
-            status_code=404,
-            detail={"mensagem": "ID de sessão repetido", "id_corrida": sessao_hardware_id},
-        )
-    # 5. Inicializa ou recupera estado
-    if sessao_hardware_id not in estados_ativos:
-        estados_ativos[sessao_hardware_id] = criar_estado_inicial()
+        # Criar nova sessão
+        sessao_id = _gerar_sessao_id()
+        _set_sessao_ativa_id(sessao_id)
+        estados_ativos[sessao_id] = criar_estado_inicial()
+        await connection_monitor.registrar_pacote(sessao_id)
+    else:
+        # Para pacotes não-iniciais, deve existir uma sessão ativa
+        if sessao_id is None or sessao_id not in estados_ativos:
+            raise HTTPException(
+                status_code=409,
+                detail={"mensagem": "Nenhuma corrida ativa. Envie um pacote inicial (tipo=0) primeiro."},
+            )
+        await connection_monitor.registrar_pacote(sessao_id)
 
-    estado_atual = estados_ativos[sessao_hardware_id]
+    estado_atual = estados_ativos[sessao_id]
 
-    # 5. Processa os indicadores puros (Cálculos de velocidade, etc)
+    # Processa os indicadores puros (Cálculos de velocidade, etc)
     novo_estado = atualizar_indicadores(estado_atual, pacote)
 
     commit_realizado = False
 
-    # Se for pacote inicial, resolver a dimensão e criar no banco se necessário
+    # Se for pacote inicial, resolver a dimensão e criar no banco
     tipo_lab = None
     if tipo == TipoPacote.INICIAL and novo_estado.id_corrida_banco is None:
         dimensao = pacote.get("dimensao")
@@ -143,25 +163,24 @@ async def receber_pacote_telemetria(
             tipo_lab = TipoLabirinto.DEZESSEIS
         elif int(dimensao) == 4:
             tipo_lab = TipoLabirinto.QUATRO
-        
+
         labirinto = Labirinto(tipo_labirinto=tipo_lab)
         session.add(labirinto)
         session.flush()
 
         corrida = Corrida(
-            sessao_hardware_id=sessao_hardware_id,
+            sessao_hardware_id=sessao_id,
             data_hora_inicio=datetime.now(UTC),
             id_labirinto=labirinto.id_labirinto,
             status_corrida=StatusCorrida.EM_ANDAMENTO,
-            tentativa=pacote.get("tentativa", 1),
-            bateria_inicial=pacote.get("bateria", 100.0)
+            bateria_inicial=pacote.get("bateria", 100)
         )
         session.add(corrida)
         session.flush()
 
         # Atualiza o estado com o ID real do banco
         novo_estado.id_corrida_banco = corrida.id_corrida
-        novo_estado.sessao_hardware_id = corrida.sessao_hardware_id
+        novo_estado.sessao_hardware_id = sessao_id
         _persistir_novos_alertas(session, estado_atual, novo_estado)
         session.commit()
         session.refresh(corrida)
@@ -206,7 +225,6 @@ async def receber_pacote_telemetria(
     if tipo == TipoPacote.FINAL and novo_estado.id_corrida_banco is not None:
         corrida = session.get(Corrida, novo_estado.id_corrida_banco)
         if corrida:
-            # O pacote FINAL sempre conclui a corrida; desafio_cumprido diferencia o resultado
             corrida.status_corrida = StatusCorrida.CONCLUIDA
             corrida.data_hora_fim = datetime.now(UTC)
             corrida.bateria_final = novo_estado.bateria_final
@@ -222,7 +240,7 @@ async def receber_pacote_telemetria(
         session.commit()
 
     # Salva o novo estado na memória
-    estados_ativos[sessao_hardware_id] = novo_estado
+    estados_ativos[sessao_id] = novo_estado
 
     # Faz o broadcast para o Dashboard via WebSocket
     estado_dict = _estado_to_dict(novo_estado)
@@ -232,8 +250,7 @@ async def receber_pacote_telemetria(
             "type": "SESSAO_INICIADA",
             "data": {
                 **estado_dict,
-                "dimensao": tipo_lab.value,
-                "tentativa": pacote.get("tentativa", 1),
+                "dimensao": tipo_lab.value if tipo_lab else None,
             }
         }
     else:
@@ -244,53 +261,46 @@ async def receber_pacote_telemetria(
 
     await manager.send_json_to_all_clients(evento)
     if tipo == TipoPacote.FINAL:
-        del estados_ativos[sessao_hardware_id]
-        connection_monitor.remover_corrida(sessao_hardware_id)
+        del estados_ativos[sessao_id]
+        connection_monitor.remover_corrida(sessao_id)
+        _set_sessao_ativa_id(None)
     return {"message": "Pacote processado com sucesso", "estado": estado_dict}
 
 
-async def _abortar_corridas_ativas(
+async def _abortar_corrida_ativa(
     session: Session,
-    novo_sessao_id: int,
+    sessao_id: int,
 ) -> None:
-    """Aborta corridas ativas quando uma nova sessão é iniciada.
+    """Aborta a corrida ativa quando uma nova sessão é iniciada.
 
     Garante que apenas uma corrida esteja ativa por vez,
-    abortando as anteriores com status ABORTADA no banco de dados.
+    abortando a anterior com status ABORTADA no banco de dados.
     """
-    ids_para_remover = [
-        sid for sid in estados_ativos
-        if sid != novo_sessao_id
-    ]
-
-    if not ids_para_remover:
+    estado = estados_ativos.pop(sessao_id, None)
+    if estado is None:
         return
 
-    for sid in ids_para_remover:
-        estado = estados_ativos.pop(sid)
+    # Atualizar registro no banco se existir
+    if estado.id_corrida_banco is not None:
+        corrida = session.get(Corrida, estado.id_corrida_banco)
+        if corrida and corrida.status_corrida == StatusCorrida.EM_ANDAMENTO:
+            corrida.status_corrida = StatusCorrida.ABORTADA
+            corrida.data_hora_fim = datetime.now(UTC)
+            session.add(corrida)
 
-        # Atualizar registro no banco se existir
-        if estado.id_corrida_banco is not None:
-            corrida = session.get(Corrida, estado.id_corrida_banco)
-            if corrida and corrida.status_corrida == StatusCorrida.EM_ANDAMENTO:
-                corrida.status_corrida = StatusCorrida.ABORTADA
-                corrida.data_hora_fim = datetime.now(UTC)
-                session.add(corrida)
-
-        connection_monitor.remover_corrida(sid)
-
+    connection_monitor.remover_corrida(sessao_id)
     session.commit()
 
     await manager.send_json_to_all_clients({
         "type": "SESSAO_ENCERRADA",
         "data": {
-            "sessoes_encerradas": ids_para_remover,
+            "sessao_encerrada": sessao_id,
             "motivo": "Nova sessão iniciada pelo Micromouse",
         }
     })
 
     logger.info(
-        "Corridas encerradas automaticamente: %s", ids_para_remover
+        "Corrida encerrada automaticamente: %s", sessao_id
     )
 
 
