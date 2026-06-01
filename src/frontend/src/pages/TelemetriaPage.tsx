@@ -1,17 +1,19 @@
 import { DashboardIndicadores } from '../components/DashboardIndicadores';
 import { MonitoringLayout } from '../components/MonitoringLayout';
-import { useTelemetria } from '../hooks/useTelemetria';
+import { EstadosContent } from '../components/EstadosContent';
 
 type TelemetriaPageProps = {
-  activeView: 'telemetria' | 'labirinto';
+  activeView: 'telemetria' | 'labirinto' | 'estados'; 
   onNavigateTelemetria: () => void;
   onNavigateLabirinto: () => void;
+  onNavigateEstados: () => void; 
 };
 
 export function TelemetriaPage({
   activeView,
   onNavigateTelemetria,
   onNavigateLabirinto,
+  onNavigateEstados,
 }: TelemetriaPageProps) {
   const telemetria = useTelemetria();
 
@@ -20,13 +22,14 @@ export function TelemetriaPage({
       activeView={activeView}
       onNavigateTelemetria={onNavigateTelemetria}
       onNavigateLabirinto={onNavigateLabirinto}
-      eyebrow="Telemetria"
-      title="Métricas em tempo real do robô MM-07"
-      description="Acompanhe os indicadores exigidos para avaliação da corrida: bateria, velocidade média e tempo de execução."
-      statusConexao={telemetria.statusConexao}
-      mensagemStatusConexao={telemetria.mensagemStatusConexao}
+      onNavigateEstados={onNavigateEstados} 
+      eyebrow={activeView === 'estados' ? "Estados" : activeView === 'labirinto' ? "Labirinto" : "Telemetria"}
+      title={activeView === 'estados' ? "Máquina de Estados do Robô" : "Métricas em tempo real do robô MM-07"}
+      description="Painel de controle e monitoramento."
     >
-      <DashboardIndicadores telemetria={telemetria} />
+      {activeView === 'estados' && <EstadosContent />}
+      {activeView === 'telemetria' && <DashboardIndicadores />}
+      {activeView === 'labirinto' && <div>[Conteúdo do Labirinto]</div>}
     </MonitoringLayout>
   );
 }

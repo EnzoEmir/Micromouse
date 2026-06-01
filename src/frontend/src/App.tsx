@@ -5,7 +5,8 @@ import { TelemetriaPage } from './pages/TelemetriaPage';
 import Session from './components/Session';
 
 function App() {
-  const [currentView, setCurrentView] = useState<'session' | 'telemetria' | 'labirinto'>('session');
+
+  const [currentView, setCurrentView] = useState<'session' | 'telemetria' | 'labirinto' | 'estados'>('session');
 
   return (
     <main className="app">
@@ -13,15 +14,17 @@ function App() {
       {currentView === 'session' ? (
 
         <Session onNavigate={() => setCurrentView('telemetria')} />
-      ) : currentView === 'telemetria' ? (
+      ) : currentView === 'telemetria' || currentView === 'estados' ? (
         <TelemetriaPage
           activeView={currentView}
           onNavigateTelemetria={() => setCurrentView('telemetria')}
           onNavigateLabirinto={() => setCurrentView('labirinto')}
+          onNavigateEstados={() => setCurrentView('estados')}
         />
       ) : (
         <LabirintoPage
-          activeView={currentView}
+          
+          activeView={currentView as any}
           onNavigateTelemetria={() => setCurrentView('telemetria')}
           onNavigateLabirinto={() => setCurrentView('labirinto')}
         />
