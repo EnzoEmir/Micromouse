@@ -47,7 +47,7 @@ function configurarHook(
     statusConexao: conectado ? "online" : "waiting",
     mensagemStatusConexao: null,
     conectado,
-    configSessao: { dimensao: null, tentativa: null },
+    configSessao: { dimensao: null },
     enviarPacote: vi.fn(),
     erro: null,
   } as ReturnType<typeof useTelemetria>);
