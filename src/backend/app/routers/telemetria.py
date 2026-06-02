@@ -1,8 +1,9 @@
 from datetime import datetime, UTC
 from typing import Dict, Any
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException
-from sqlmodel import Session
 import logging
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException
+from sqlmodel import Session, select
 
 from ..database import get_session
 from ..services.telemetria import (
@@ -14,9 +15,11 @@ from ..services.telemetria import (
 from ..schemas.telemetria import IndicadoresDesempenho, TipoPacote
 from ..services.websocket_manager import manager
 from ..services.connection_monitor import connection_monitor
+from ..models.celula import Celula
 from ..models.corrida import Corrida
 from ..models.evento import Evento
 from ..models.labirinto import Labirinto
+from ..models.percurso import Percurso
 from ..models.enums import StatusCorrida, TipoLabirinto
 
 logger = logging.getLogger(__name__)
@@ -164,14 +167,51 @@ async def receber_pacote_telemetria(
         session.refresh(corrida)
         commit_realizado = True
 
+    # Se for pacote de movimentação, persistir step no percurso exploratório
+    if tipo == TipoPacote.MOVIMENTACAO and novo_estado.id_corrida_banco is not None:
+        x = pacote.get("x")
+        y = pacote.get("y")
+        if x is not None and y is not None:
+            _persistir_passo_percurso(
+                session,
+                id_corrida=novo_estado.id_corrida_banco,
+                x=float(x),
+                y=float(y),
+                tipo_percurso="exploratorio",
+            )
+            if not commit_realizado:
+                _persistir_novos_alertas(session, estado_atual, novo_estado)
+                session.commit()
+                commit_realizado = True
+
+    # Se for pacote de rota otimizada, persistir toda a rota
+    if tipo == TipoPacote.ROTA and novo_estado.id_corrida_banco is not None:
+        rota = pacote.get("rota")
+        if rota is not None and isinstance(rota, list):
+            for pt in rota:
+                if isinstance(pt, list) and len(pt) == 2:
+                    _persistir_passo_percurso(
+                        session,
+                        id_corrida=novo_estado.id_corrida_banco,
+                        x=float(pt[0]),
+                        y=float(pt[1]),
+                        tipo_percurso="otimizado",
+                    )
+            if not commit_realizado:
+                _persistir_novos_alertas(session, estado_atual, novo_estado)
+                session.commit()
+                commit_realizado = True
+
     # Se for pacote final, atualizar o banco de dados
     if tipo == TipoPacote.FINAL and novo_estado.id_corrida_banco is not None:
         corrida = session.get(Corrida, novo_estado.id_corrida_banco)
         if corrida:
-            corrida.status_corrida = StatusCorrida.CONCLUIDA if novo_estado.sucesso else StatusCorrida.FALHA
+            # O pacote FINAL sempre conclui a corrida; desafio_cumprido diferencia o resultado
+            corrida.status_corrida = StatusCorrida.CONCLUIDA
             corrida.data_hora_fim = datetime.now(UTC)
             corrida.bateria_final = novo_estado.bateria_final
             corrida.velocidade_media = novo_estado.velocidade_media
+            corrida.tempo_total = novo_estado.tempo_final_ms
             corrida.desafio_cumprido = novo_estado.sucesso
             session.add(corrida)
             _persistir_novos_alertas(session, estado_atual, novo_estado)
@@ -316,3 +356,48 @@ def _persistir_novos_alertas(
         )
 
     return True
+
+
+def _persistir_passo_percurso(
+    session: Session,
+    id_corrida: int,
+    x: float,
+    y: float,
+    tipo_percurso: str = "exploratorio",
+) -> None:
+    """Persiste um passo do percurso para a posição (x, y) do Micromouse.
+
+    Reutiliza a Célula existente para aquela coordenada+labirinto, ou cria
+    uma nova (com paredes nulas) se for a primeira vez que o robô visita a posição.
+    """
+    # Recupera o id_labirinto a partir da corrida
+    corrida = session.get(Corrida, id_corrida)
+    if corrida is None:
+        logger.warning("_persistir_passo_percurso: corrida %d não encontrada.", id_corrida)
+        return
+
+    # Encontra ou cria a Célula correspondente à posição
+    celula = session.exec(
+        select(Celula)
+        .where(Celula.coordenada_x == int(x))
+        .where(Celula.coordenada_y == int(y))
+        .where(Celula.id_labirinto == corrida.id_labirinto)
+    ).first()
+
+    if celula is None:
+        celula = Celula(
+            coordenada_x=int(x),
+            coordenada_y=int(y),
+            id_labirinto=corrida.id_labirinto,
+        )
+        session.add(celula)
+        session.flush()  # Garante id_celula antes de criar Percurso
+
+    # Registra passagem pelo passo do percurso
+    passo = Percurso(
+        id_celula=celula.id_celula,
+        id_corrida=id_corrida,
+        data_hora_passagem=datetime.now(UTC),
+        tipo_percurso=tipo_percurso,
+    )
+    session.add(passo)
