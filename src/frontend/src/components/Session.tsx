@@ -84,12 +84,7 @@ export default function SessionManager({ onNavigate }: SessionManagerProps) {
             </p>
 
             <div className="space-y-3 mb-8">
-              <div className="bg-slate-50 border border-slate-100 p-3 rounded-2xl flex justify-between items-center text-sm">
-                <span className="text-slate-500">Tentativa:</span>
-                <span className="font-mono font-bold text-slate-800 bg-white px-2 py-0.5 rounded-md border border-slate-200 shadow-xs">
-                  #{configSessao.tentativa}
-                </span>
-              </div>
+
               <div className="bg-slate-50 border border-slate-100 p-3 rounded-2xl flex justify-between items-center text-sm">
                 <span className="text-slate-500">Dimensão do Labirinto</span>
                 <span className="font-mono font-bold text-slate-800 bg-white px-2 py-0.5 rounded-md border border-slate-200 shadow-xs">

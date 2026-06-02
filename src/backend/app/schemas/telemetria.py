@@ -1,10 +1,15 @@
 """
 Schemas Pydantic para pacotes de telemetria e indicadores de desempenho.
 
-Tipos de pacote:
-  - PacoteInicial: dados de início/configuração da corrida.
-  - PacoteMovimentacao: dados de movimentação durante a corrida.
-  - PacoteFinal: dados consolidados ao fim da corrida.
+Tipos de pacote (campo ``tipo`` — int):
+  - 0 → PacoteInicial: configuração inicial da corrida.
+  - 1 → PacoteMovimentacao: movimentação / descoberta de paredes.
+  - 2 → PacoteRota: rota otimizada calculada pelo Floodfill.
+  - 3 → PacoteFinal: dados consolidados ao fim da corrida.
+  - 4 → PacoteHeartbeat: sinal periódico de vida da conexão.
+  - 5 → PacoteAlertaTemperatura: alerta crítico de temperatura.
+
+Schemas auxiliares:
   - IndicadoresDesempenho: estado consolidado dos indicadores do dashboard.
   - ResultadoValidacao: resultado da validação de um pacote.
 """
@@ -30,14 +35,19 @@ class StatusCorridaTelemetria(str, enum.Enum):
     FALHA = "falha"
 
 
-class TipoPacote(str, enum.Enum):
-    """Tipos de pacote de telemetria reconhecidos."""
+class TipoPacote(int, enum.Enum):
+    """Tipos de pacote de telemetria conforme telemetria.md.
 
-    INICIAL = "inicial"
-    MOVIMENTACAO = "movimentacao"
-    ROTA = "rota"
-    FINAL = "final"
-    INVALIDO = "invalido"
+    O campo ``tipo`` é o primeiro campo de todo pacote enviado pelo ESP32.
+    """
+
+    INICIAL = 0
+    MOVIMENTACAO = 1
+    ROTA = 2
+    FINAL = 3
+    HEARTBEAT = 4
+    ALERTA_TEMPERATURA = 5
+    INVALIDO = -1
 
 
 class TipoAlertaTelemetria(str, enum.Enum):
@@ -45,6 +55,7 @@ class TipoAlertaTelemetria(str, enum.Enum):
 
     BATERIA_CRITICA = "bateria_critica"
     POSSIVEL_PARADA_INESPERADA = "possivel_parada_inesperada"
+    TEMPERATURA_CRITICA = "temperatura_critica"
 
 
 # ---------------------------------------------------------------------------
@@ -53,41 +64,75 @@ class TipoAlertaTelemetria(str, enum.Enum):
 
 
 class PacoteInicial(BaseModel):
-    """Pacote de início/configuração da corrida."""
+    """Pacote de configuração inicial (tipo=0).
 
-    id_corrida: int
+    Disparado uma única vez na largada.
+    """
+
+    tipo: int = Field(0)
     timestamp_ms: int = Field(ge=0)
-    dimensao: int | str
-    tentativa: int
-    bateria: float = Field(ge=0, le=100)
+    dimensao: int
+    bateria: int = Field(ge=0, le=100)
 
 
 class PacoteMovimentacao(BaseModel):
-    """Pacote de movimentação durante a corrida."""
+    """Pacote de movimentação / descoberta de paredes (tipo=1).
 
-    id_corrida: int
+    Disparado apenas ao mudar de célula.
+    """
+
+    tipo: int = Field(1)
     timestamp_ms: int = Field(ge=0)
-    x: int | float
-    y: int | float
-    w: int | float
-    bateria: float | None = Field(default=None, ge=0, le=100)
+    x: int
+    y: int
+    w: int = Field(ge=0, le=15)
 
 
 class PacoteRota(BaseModel):
-    """Pacote contendo a rota otimizada calculada."""
+    """Pacote contendo a rota otimizada calculada (tipo=2).
 
-    id_corrida: int
+    Disparado uma única vez após o cálculo do Floodfill.
+    """
+
+    tipo: int = Field(2)
     timestamp_ms: int = Field(ge=0)
-    rota: list[list[int | float]]
+    rota: list[list[int]]
 
 class PacoteFinal(BaseModel):
-    """Pacote consolidado ao fim da corrida."""
+    """Pacote consolidado ao fim da corrida (tipo=3).
 
-    id_corrida: int
+    Disparado uma única vez ao terminar/falhar.
+    """
+
+    tipo: int = Field(3)
     timestamp_ms: int = Field(ge=0)
     sucesso: bool
     v_med: float = Field(ge=0)
-    bateria: float = Field(ge=0, le=100)
+    bateria: int = Field(ge=0, le=100)
+
+
+class PacoteHeartbeat(BaseModel):
+    """Sinal periódico de vida da conexão (tipo=4).
+
+    Enviado a cada 1,5 segundos. Permite detectar conexão perdida e
+    monitorar nível de bateria ao longo da corrida.
+    """
+
+    tipo: int = Field(4)
+    timestamp_ms: int = Field(ge=0)
+    bateria: int = Field(ge=0, le=100)
+
+
+class PacoteAlertaTemperatura(BaseModel):
+    """Alerta crítico de temperatura (tipo=5).
+
+    Enviado imediatamente quando a temperatura ultrapassa o limiar seguro.
+    A corrida é interrompida automaticamente após este pacote.
+    """
+
+    tipo: int = Field(5)
+    timestamp_ms: int = Field(ge=0)
+    temp_c: float
 
 
 class AlertaTelemetria(BaseModel):
@@ -120,6 +165,7 @@ class IndicadoresDesempenho(BaseModel):
     alerta_bateria_critica: bool = False
     alerta_possivel_parada_inesperada: bool = False
     alerta_dado_invalido: bool = False
+    alerta_temperatura_critica: bool = False
     log_alertas: list[AlertaTelemetria] = Field(default_factory=list)
 
     # --- Campos internos para cálculo acumulado de velocidade ---

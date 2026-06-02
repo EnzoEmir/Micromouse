@@ -38,6 +38,15 @@ BATERIA_CRITICA_THRESHOLD: float = 10.0
 """Limiar percentual em que a bateria é considerada crítica."""
 
 PARADA_INESPERADA_THRESHOLD_MS: int = 3000
+
+_TIPO_MAP: dict[int, TipoPacote] = {
+    0: TipoPacote.INICIAL,
+    1: TipoPacote.MOVIMENTACAO,
+    2: TipoPacote.ROTA,
+    3: TipoPacote.FINAL,
+    4: TipoPacote.HEARTBEAT,
+    5: TipoPacote.ALERTA_TEMPERATURA,
+}
 """Tempo mínimo em ms para considerar uma parada inesperada."""
 
 
@@ -57,35 +66,16 @@ def criar_estado_inicial() -> IndicadoresDesempenho:
 
 
 def identificar_tipo_pacote(packet: dict | None) -> TipoPacote:
-    """Identifica o tipo do pacote de telemetria com base nos campos presentes.
+    """Identifica o tipo do pacote via campo ``tipo`` (int).
 
-    Retorna:
-        TipoPacote.INICIAL — possui ``dimensao``, ``tentativa`` e ``bateria``.
-        TipoPacote.MOVIMENTACAO — possui ``x``, ``y`` e ``w``.
-        TipoPacote.FINAL — possui ``sucesso``, ``v_med`` e ``bateria``.
-        TipoPacote.INVALIDO — qualquer outro caso.
+    Retorna TipoPacote correspondente ao valor, ou INVALIDO.
     """
     if not isinstance(packet, dict):
         return TipoPacote.INVALIDO
-
-    # Pacote inicial: dimensao + tentativa + bateria (sem 'sucesso' para
-    # desambiguar do pacote final que também tem bateria)
-    if "dimensao" in packet and "tentativa" in packet and "bateria" in packet:
-        return TipoPacote.INICIAL
-
-    # Pacote final: sucesso + v_med + bateria
-    if "sucesso" in packet and "v_med" in packet and "bateria" in packet:
-        return TipoPacote.FINAL
-
-    # Pacote de movimentação: x + y + w
-    if "x" in packet and "y" in packet and "w" in packet:
-        return TipoPacote.MOVIMENTACAO
-
-    # Pacote de rota: rota (lista)
-    if "rota" in packet and isinstance(packet["rota"], list):
-        return TipoPacote.ROTA
-
-    return TipoPacote.INVALIDO
+    tipo_raw = packet.get("tipo")
+    if not isinstance(tipo_raw, int):
+        return TipoPacote.INVALIDO
+    return _TIPO_MAP.get(tipo_raw, TipoPacote.INVALIDO)
 
 
 # ---------------------------------------------------------------------------
@@ -98,29 +88,21 @@ def validar_pacote(
     tipo: TipoPacote,
     ultimo_timestamp_ms: int | None = None,
 ) -> ResultadoValidacao:
-    """Valida um pacote de telemetria conforme seu tipo.
-
-    Args:
-        packet: dicionário com os dados do pacote.
-        tipo: tipo identificado do pacote.
-        ultimo_timestamp_ms: último timestamp válido recebido na corrida.
-
-    Returns:
-        ResultadoValidacao com flag ``valido`` e lista de ``erros``.
-    """
+    """Valida um pacote de telemetria conforme seu tipo."""
     erros: list[str] = []
 
     if tipo == TipoPacote.INVALIDO:
         erros.append("Tipo de pacote não reconhecido.")
         return ResultadoValidacao(valido=False, erros=erros)
 
-    # --- Campos obrigatórios gerais ---
-    id_corrida = packet.get("id_corrida")
-    if id_corrida is None:
-        erros.append("Campo 'id_corrida' ausente.")
-    elif not isinstance(id_corrida, int):
-        erros.append(f"Campo 'id_corrida' deve ser um número inteiro (recebido: {id_corrida}).")
+    # --- Campo 'tipo' obrigatório ---
+    tipo_val = packet.get("tipo")
+    if tipo_val is None:
+        erros.append("Campo 'tipo' ausente.")
+    elif not isinstance(tipo_val, int):
+        erros.append(f"Campo 'tipo' deve ser um número inteiro (recebido: {tipo_val}).")
 
+    # --- timestamp_ms obrigatório ---
     ts = packet.get("timestamp_ms")
     if ts is None:
         erros.append("Campo 'timestamp_ms' ausente.")
@@ -138,6 +120,10 @@ def validar_pacote(
         _validar_pacote_rota(packet, erros)
     elif tipo == TipoPacote.FINAL:
         _validar_pacote_final(packet, erros)
+    elif tipo == TipoPacote.HEARTBEAT:
+        _validar_pacote_heartbeat(packet, erros)
+    elif tipo == TipoPacote.ALERTA_TEMPERATURA:
+        _validar_pacote_alerta_temperatura(packet, erros)
 
     return ResultadoValidacao(valido=len(erros) == 0, erros=erros)
 
@@ -149,17 +135,11 @@ def _validar_pacote_inicial(packet: dict, erros: list[str]) -> None:
     elif dimensao not in (4, 8, 16):
         erros.append(f"Dimensão inválida: deve ser 4, 8 ou 16 (recebido: {dimensao}).")
 
-    tentativa = packet.get("tentativa")
-    if tentativa is None:
-        erros.append("Campo 'tentativa' ausente no pacote inicial.")
-    elif tentativa not in (1, 2, 3):
-        erros.append(f"Tentativa fora do limite: deve ser 1, 2 ou 3 (recebido: {tentativa}).")
-
     bateria = packet.get("bateria")
     if bateria is None:
         erros.append("Campo 'bateria' ausente no pacote inicial.")
-    elif not isinstance(bateria, (int, float)):
-        erros.append(f"Campo 'bateria' deve ser numérico (recebido: {bateria}).")
+    elif not isinstance(bateria, int):
+        erros.append(f"Campo 'bateria' deve ser um número inteiro (recebido: {bateria}).")
     elif not (0 <= bateria <= 100):
         erros.append(f"Bateria fora do range [0, 100] (recebido: {bateria}).")
 
@@ -169,12 +149,21 @@ def _validar_pacote_movimentacao(
     erros: list[str],
     ultimo_timestamp_ms: int | None,
 ) -> None:
-    for campo in ("x", "y", "w"):
+    for campo in ("x", "y"):
         valor = packet.get(campo)
         if valor is None:
             erros.append(f"Campo '{campo}' ausente no pacote de movimentação.")
-        elif not isinstance(valor, (int, float)):
-            erros.append(f"Campo '{campo}' deve ser numérico (recebido: {valor}).")
+        elif not isinstance(valor, int):
+            erros.append(f"Campo '{campo}' deve ser um número inteiro (recebido: {valor}).")
+
+    # Bitmask de paredes: int no range [0, 15]
+    w = packet.get("w")
+    if w is None:
+        erros.append("Campo 'w' ausente no pacote de movimentação.")
+    elif not isinstance(w, int):
+        erros.append(f"Campo 'w' deve ser um número inteiro (recebido: {w}).")
+    elif not (0 <= w <= 15):
+        erros.append(f"Campo 'w' fora do range [0, 15] (recebido: {w}).")
 
     # Timestamp não-regressivo
     ts = packet.get("timestamp_ms")
@@ -186,14 +175,6 @@ def _validar_pacote_movimentacao(
         erros.append(
             f"Timestamp regressivo: {ts} < último válido {ultimo_timestamp_ms}."
         )
-
-    # Bateria opcional — se presente, validar range
-    bateria = packet.get("bateria")
-    if bateria is not None:
-        if not isinstance(bateria, (int, float)):
-            erros.append(f"Campo 'bateria' deve ser numérico (recebido: {bateria}).")
-        elif not (0 <= bateria <= 100):
-            erros.append(f"Bateria fora do range [0, 100] (recebido: {bateria}).")
 
 def _validar_pacote_rota(packet: dict, erros: list[str]) -> None:
     """Valida as regras específicas do pacote de rota otimizada."""
@@ -210,8 +191,8 @@ def _validar_pacote_rota(packet: dict, erros: list[str]) -> None:
         if not isinstance(pt, list) or len(pt) != 2:
             erros.append(f"Ponto {i} da rota inválido: deve ser [x, y] (recebido: {pt}).")
             continue
-        if not isinstance(pt[0], (int, float)) or not isinstance(pt[1], (int, float)):
-            erros.append(f"Coordenadas do ponto {i} devem ser numéricas (recebido: {pt}).")
+        if not isinstance(pt[0], int) or not isinstance(pt[1], int):
+            erros.append(f"Coordenadas do ponto {i} devem ser inteiras (recebido: {pt}).")
 
 def _validar_pacote_final(packet: dict, erros: list[str]) -> None:
     sucesso = packet.get("sucesso")
@@ -231,16 +212,32 @@ def _validar_pacote_final(packet: dict, erros: list[str]) -> None:
     bateria = packet.get("bateria")
     if bateria is None:
         erros.append("Campo 'bateria' ausente no pacote final.")
-    elif not isinstance(bateria, (int, float)):
-        erros.append(f"Campo 'bateria' deve ser numérico (recebido: {bateria}).")
+    elif not isinstance(bateria, int):
+        erros.append(f"Campo 'bateria' deve ser um número inteiro (recebido: {bateria}).")
     elif not (0 <= bateria <= 100):
         erros.append(f"Bateria fora do range [0, 100] (recebido: {bateria}).")
 
 
+def _validar_pacote_heartbeat(packet: dict, erros: list[str]) -> None:
+    """Valida campos do pacote Heartbeat (tipo=4)."""
+    bateria = packet.get("bateria")
+    if bateria is None:
+        erros.append("Campo 'bateria' ausente no pacote heartbeat.")
+    elif not isinstance(bateria, int):
+        erros.append(f"Campo 'bateria' deve ser um número inteiro (recebido: {bateria}).")
+    elif not (0 <= bateria <= 100):
+        erros.append(f"Bateria fora do range [0, 100] (recebido: {bateria}).")
 
-# ---------------------------------------------------------------------------
-# Cálculo de velocidade de um segmento
-# ---------------------------------------------------------------------------
+
+def _validar_pacote_alerta_temperatura(packet: dict, erros: list[str]) -> None:
+    """Valida campos do pacote Alerta Crítico de Temperatura (tipo=5)."""
+    temp_c = packet.get("temp_c")
+    if temp_c is None:
+        erros.append("Campo 'temp_c' ausente no pacote de alerta de temperatura.")
+    elif not isinstance(temp_c, (int, float)):
+        erros.append(f"Campo 'temp_c' deve ser numérico (recebido: {temp_c}).")
+
+
 
 
 def calcular_velocidade_segmento(
@@ -328,6 +325,10 @@ def atualizar_indicadores(
         _processar_pacote_movimentacao(novo_estado, pacote)
     elif tipo == TipoPacote.FINAL:
         _processar_pacote_final(novo_estado, pacote)
+    elif tipo == TipoPacote.HEARTBEAT:
+        _processar_pacote_heartbeat(novo_estado, pacote)
+    elif tipo == TipoPacote.ALERTA_TEMPERATURA:
+        _processar_pacote_alerta_temperatura(novo_estado, pacote)
 
     return novo_estado
 
@@ -341,7 +342,6 @@ def _processar_pacote_inicial(
     estado: IndicadoresDesempenho, pacote: dict
 ) -> None:
     """Atualiza indicadores com dados do pacote inicial."""
-    estado.sessao_hardware_id = pacote["id_corrida"]
     estado.bateria_inicial = pacote["bateria"]
     estado.bateria_atual = pacote["bateria"]
     estado.status_corrida = StatusCorridaTelemetria.EM_ANDAMENTO
@@ -409,16 +409,6 @@ def _processar_pacote_movimentacao(
     estado.tempo_decorrido_ms = ts_atual
     estado.ultimo_timestamp_ms = ts_atual
 
-    # Atualizar bateria se presente
-    bateria = pacote.get("bateria")
-    if bateria is not None and isinstance(bateria, (int, float)) and 0 <= bateria <= 100:
-        estado.bateria_atual = bateria
-        _atualizar_alerta_bateria_critica(
-            estado,
-            bateria=bateria,
-            timestamp_ms=ts_atual,
-        )
-
 
 def _processar_pacote_final(
     estado: IndicadoresDesempenho, pacote: dict
@@ -448,6 +438,48 @@ def _processar_pacote_final(
         else StatusCorridaTelemetria.FALHA
     )
     _resetar_alerta_parada_inesperada(estado)
+
+
+def _processar_pacote_heartbeat(
+    estado: IndicadoresDesempenho, pacote: dict
+) -> None:
+    """Processa um Heartbeat (tipo=4): atualiza bateria e timestamp."""
+    estado.bateria_atual = pacote["bateria"]
+    estado.ultimo_timestamp_ms = pacote["timestamp_ms"]
+    _atualizar_alerta_bateria_critica(
+        estado,
+        bateria=pacote["bateria"],
+        timestamp_ms=pacote["timestamp_ms"],
+    )
+
+
+def _processar_pacote_alerta_temperatura(
+    estado: IndicadoresDesempenho, pacote: dict
+) -> None:
+    """Processa um Alerta Crítico de Temperatura (tipo=5).
+
+    Interrompe a corrida automaticamente e registra o alerta.
+    """
+    ts = pacote["timestamp_ms"]
+    temp_c = pacote["temp_c"]
+    estado.ultimo_timestamp_ms = ts
+
+    # Registrar alerta de temperatura crítica
+    _registrar_alerta(
+        estado,
+        tipo=TipoAlertaTelemetria.TEMPERATURA_CRITICA,
+        mensagem=f"Temperatura crítica detectada: {temp_c}°C.",
+        timestamp_ms=ts,
+    )
+    estado.alerta_temperatura_critica = True
+
+    # Interromper a corrida automaticamente
+    if estado.status_corrida == StatusCorridaTelemetria.EM_ANDAMENTO:
+        estado.status_corrida = StatusCorridaTelemetria.FALHA
+        estado.sucesso = False
+        estado.tempo_final_ms = ts
+        estado.tempo_decorrido_ms = ts
+        _resetar_alerta_parada_inesperada(estado)
 
 
 def _corrida_aceita_alerta_de_parada(estado: IndicadoresDesempenho) -> bool:

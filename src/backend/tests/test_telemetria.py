@@ -1,667 +1,307 @@
 """Testes unitários para a lógica dos indicadores de desempenho (telemetria).
 
-Cobre:
-  - Identificação de tipo de pacote
-  - Validação de pacotes (campos obrigatórios e regras por tipo)
-  - Cálculo de velocidade de segmento
-  - Atualização dos indicadores (função agregadora)
-  - Cenários simulados completos
+Pacotes seguem a especificação telemetria.md:
+  tipo 0 = Configuração Inicial
+  tipo 1 = Movimentação / Descoberta de Paredes
+  tipo 2 = Rota Otimizada
+  tipo 3 = Fim de Corrida
 """
-
 import math
-
 import pytest
 
 from app.schemas.telemetria import (
-    IndicadoresDesempenho,
-    StatusCorridaTelemetria,
-    TipoAlertaTelemetria,
-    TipoPacote,
+    IndicadoresDesempenho, StatusCorridaTelemetria, TipoAlertaTelemetria, TipoPacote,
 )
 from app.services.telemetria import (
-    BATERIA_CRITICA_THRESHOLD,
-    CELL_SIZE_CM,
-    PARADA_INESPERADA_THRESHOLD_MS,
-    atualizar_indicadores,
-    calcular_velocidade_segmento,
-    criar_estado_inicial,
-    identificar_tipo_pacote,
-    validar_pacote,
+    BATERIA_CRITICA_THRESHOLD, CELL_SIZE_CM, PARADA_INESPERADA_THRESHOLD_MS,
+    atualizar_indicadores, calcular_velocidade_segmento,
+    criar_estado_inicial, identificar_tipo_pacote, validar_pacote,
 )
 
-
 # ===================================================================
-# Dados mockados
+# Dados mockados — conforme telemetria.md
 # ===================================================================
 
-# Cenário 1 — Corrida normal
-PACOTE_INICIAL_NORMAL = {
-    "id_corrida": 1,
-    "timestamp_ms": 0,
-    "dimensao": 4,
-    "tentativa": 1,
-    "bateria": 95,
-}
+PACOTE_INICIAL_NORMAL = {"tipo": 0, "timestamp_ms": 0, "dimensao": 4, "bateria": 95}
 
-PACOTES_MOVIMENTACAO_NORMAL = [
-    {"id_corrida": 1, "timestamp_ms": 1000, "x": 0, "y": 0, "w": 0},
-    {"id_corrida": 1, "timestamp_ms": 2000, "x": 1, "y": 0, "w": 0},
-    {"id_corrida": 1, "timestamp_ms": 3000, "x": 1, "y": 1, "w": 90},
-    {"id_corrida": 1, "timestamp_ms": 4000, "x": 2, "y": 1, "w": 0},
-    {"id_corrida": 1, "timestamp_ms": 5000, "x": 2, "y": 2, "w": 90},
+PACOTE_MOVIMENTACAO = [
+    {"tipo": 1, "timestamp_ms": 1000, "x": 0, "y": 0, "w": 0},
+    {"tipo": 1, "timestamp_ms": 2000, "x": 1, "y": 0, "w": 0},
+    {"tipo": 1, "timestamp_ms": 3000, "x": 1, "y": 1, "w": 5},
+    {"tipo": 1, "timestamp_ms": 4000, "x": 2, "y": 1, "w": 0},
+    {"tipo": 1, "timestamp_ms": 5000, "x": 2, "y": 2, "w": 5},
 ]
 
-PACOTE_FINAL_SUCESSO = {
-    "id_corrida": 1,
-    "timestamp_ms": 30000,
-    "sucesso": True,
-    "v_med": 12.5,
-    "bateria": 80,
-}
+PACOTE_FINAL_SUCESSO = {"tipo": 3, "timestamp_ms": 30000, "sucesso": True, "v_med": 12.5, "bateria": 80}
 
-# Cenário 2 — Bateria crítica
-PACOTE_INICIAL_BATERIA_CRITICA = {
-    "id_corrida": 2,
-    "timestamp_ms": 0,
-    "dimensao": 4,
-    "tentativa": 1,
-    "bateria": 10,
-}
+PACOTE_INICIAL_BATERIA_CRITICA = {"tipo": 0, "timestamp_ms": 0, "dimensao": 4, "bateria": 10}
 
-PACOTE_FINAL_BATERIA_CRITICA = {
-    "id_corrida": 2,
-    "timestamp_ms": 15000,
-    "sucesso": False,
-    "v_med": 5.0,
-    "bateria": 3,
-}
+PACOTE_FINAL_BATERIA_CRITICA = {"tipo": 3, "timestamp_ms": 15000, "sucesso": False, "v_med": 5.0, "bateria": 3}
 
-# Cenário 3 — Pacotes inválidos
-PACOTE_SEM_TIMESTAMP = {
-    "id_corrida": 1,
-    "dimensao": 4,
-    "tentativa": 1,
-    "bateria": 90,
-}
+PACOTE_SEM_TIMESTAMP = {"tipo": 0, "dimensao": 4, "bateria": 90}
+PACOTE_SEM_TIPO = {"timestamp_ms": 1000, "x": 1, "y": 1, "w": 0}
+PACOTE_MOV_SEM_X = {"tipo": 1, "timestamp_ms": 2000, "y": 1, "w": 0}
+PACOTE_FINAL_SEM_VMED = {"tipo": 3, "timestamp_ms": 30000, "sucesso": True, "bateria": 80}
+PACOTE_TIMESTAMP_REGRESSIVO = {"tipo": 1, "timestamp_ms": 500, "x": 3, "y": 3, "w": 5}
 
-PACOTE_SEM_ID_CORRIDA = {
-    "timestamp_ms": 1000,
-    "x": 1,
-    "y": 1,
-    "w": 0,
-}
-
-PACOTE_MOV_SEM_X = {
-    "id_corrida": 1,
-    "timestamp_ms": 2000,
-    "y": 1,
-    "w": 0,
-}
-
-PACOTE_FINAL_SEM_VMED = {
-    "id_corrida": 1,
-    "timestamp_ms": 30000,
-    "sucesso": True,
-    "bateria": 80,
-}
-
-# Cenário 4 — Timestamp inconsistente
-PACOTE_TIMESTAMP_REGRESSIVO = {
-    "id_corrida": 1,
-    "timestamp_ms": 500,
-    "x": 3,
-    "y": 3,
-    "w": 180,
-}
-
-PACOTES_MOVIMENTACAO_PARADA = [
-    {"id_corrida": 3, "timestamp_ms": 1000, "x": 0, "y": 0, "w": 0},
-    {"id_corrida": 3, "timestamp_ms": 2500, "x": 0, "y": 0, "w": 0},
-    {"id_corrida": 3, "timestamp_ms": 4501, "x": 0, "y": 0, "w": 0},
+PACOTE_MOVIMENTACAO_PARADA = [
+    {"tipo": 1, "timestamp_ms": 1000, "x": 0, "y": 0, "w": 0},
+    {"tipo": 1, "timestamp_ms": 2500, "x": 0, "y": 0, "w": 0},
+    {"tipo": 1, "timestamp_ms": 4501, "x": 0, "y": 0, "w": 0},
 ]
-
-
-# ===================================================================
-# Testes — Identificação de tipo de pacote
-# ===================================================================
 
 
 class TestIdentificarTipoPacote:
-    """Testes para identificar_tipo_pacote()."""
-
     def test_pacote_inicial(self):
         assert identificar_tipo_pacote(PACOTE_INICIAL_NORMAL) == TipoPacote.INICIAL
-
     def test_pacote_movimentacao(self):
-        assert (
-            identificar_tipo_pacote(PACOTES_MOVIMENTACAO_NORMAL[0])
-            == TipoPacote.MOVIMENTACAO
-        )
-
+        assert identificar_tipo_pacote(PACOTE_MOVIMENTACAO[0]) == TipoPacote.MOVIMENTACAO
     def test_pacote_final(self):
         assert identificar_tipo_pacote(PACOTE_FINAL_SUCESSO) == TipoPacote.FINAL
-
+    def test_pacote_rota(self):
+        assert identificar_tipo_pacote({"tipo": 2, "timestamp_ms": 0, "rota": []}) == TipoPacote.ROTA
     def test_pacote_invalido_dict_vazio(self):
         assert identificar_tipo_pacote({}) == TipoPacote.INVALIDO
-
     def test_pacote_invalido_none(self):
         assert identificar_tipo_pacote(None) == TipoPacote.INVALIDO
-
     def test_pacote_invalido_tipo_errado(self):
         assert identificar_tipo_pacote("not a dict") == TipoPacote.INVALIDO
-
-    def test_pacote_invalido_campos_parciais(self):
-        assert identificar_tipo_pacote({"x": 1, "y": 2}) == TipoPacote.INVALIDO
-
-    def test_pacote_final_sem_vmed_nao_e_final(self):
-        """Pacote com 'sucesso' e 'bateria' mas sem 'v_med' não é final."""
-        assert identificar_tipo_pacote(PACOTE_FINAL_SEM_VMED) == TipoPacote.INVALIDO
-
-
-# ===================================================================
-# Testes — Validação de pacotes
-# ===================================================================
+    def test_pacote_invalido_tipo_desconhecido(self):
+        assert identificar_tipo_pacote({"tipo": 99}) == TipoPacote.INVALIDO
+    def test_pacote_sem_campo_tipo(self):
+        assert identificar_tipo_pacote(PACOTE_SEM_TIPO) == TipoPacote.INVALIDO
+    def test_pacote_tipo_string_invalido(self):
+        assert identificar_tipo_pacote({"tipo": "inicial"}) == TipoPacote.INVALIDO
 
 
 class TestValidarPacote:
-    """Testes para validar_pacote()."""
-
     def test_pacote_inicial_valido(self):
         result = validar_pacote(PACOTE_INICIAL_NORMAL, TipoPacote.INICIAL)
-        assert result.valido is True
-        assert result.erros == []
-
+        assert result.valido is True and result.erros == []
     def test_pacote_movimentacao_valido(self):
-        result = validar_pacote(
-            PACOTES_MOVIMENTACAO_NORMAL[1], TipoPacote.MOVIMENTACAO, 1000
-        )
-        assert result.valido is True
-
+        assert validar_pacote(PACOTE_MOVIMENTACAO[1], TipoPacote.MOVIMENTACAO, 1000).valido
     def test_pacote_final_valido(self):
-        result = validar_pacote(PACOTE_FINAL_SUCESSO, TipoPacote.FINAL)
-        assert result.valido is True
-
+        assert validar_pacote(PACOTE_FINAL_SUCESSO, TipoPacote.FINAL).valido
     def test_tipo_invalido_rejeita(self):
-        result = validar_pacote({}, TipoPacote.INVALIDO)
-        assert result.valido is False
-        assert "Tipo de pacote não reconhecido." in result.erros
-
-    def test_sem_id_corrida(self):
-        result = validar_pacote(PACOTE_SEM_ID_CORRIDA, TipoPacote.MOVIMENTACAO)
-        assert result.valido is False
-        assert any("id_corrida" in e for e in result.erros)
-
+        r = validar_pacote({}, TipoPacote.INVALIDO)
+        assert not r.valido and "Tipo de pacote não reconhecido." in r.erros
+    def test_sem_tipo(self):
+        assert not validar_pacote(PACOTE_SEM_TIPO, TipoPacote.INVALIDO).valido
     def test_sem_timestamp(self):
-        result = validar_pacote(PACOTE_SEM_TIMESTAMP, TipoPacote.INICIAL)
-        assert result.valido is False
-        assert any("timestamp_ms" in e for e in result.erros)
-
+        r = validar_pacote(PACOTE_SEM_TIMESTAMP, TipoPacote.INICIAL)
+        assert not r.valido and any("timestamp_ms" in e for e in r.erros)
     def test_timestamp_negativo(self):
-        pacote = {**PACOTE_INICIAL_NORMAL, "timestamp_ms": -1}
-        result = validar_pacote(pacote, TipoPacote.INICIAL)
-        assert result.valido is False
-        assert any("negativo" in e for e in result.erros)
-
+        r = validar_pacote({**PACOTE_INICIAL_NORMAL, "timestamp_ms": -1}, TipoPacote.INICIAL)
+        assert not r.valido and any("negativo" in e for e in r.erros)
     def test_timestamp_regressivo(self):
-        result = validar_pacote(
-            PACOTE_TIMESTAMP_REGRESSIVO,
-            TipoPacote.MOVIMENTACAO,
-            ultimo_timestamp_ms=5000,
-        )
-        assert result.valido is False
-        assert any("regressivo" in e.lower() for e in result.erros)
-
+        r = validar_pacote(PACOTE_TIMESTAMP_REGRESSIVO, TipoPacote.MOVIMENTACAO, ultimo_timestamp_ms=5000)
+        assert not r.valido and any("regressivo" in e.lower() for e in r.erros)
     def test_bateria_fora_de_range_inicial(self):
-        pacote = {**PACOTE_INICIAL_NORMAL, "bateria": 150}
-        result = validar_pacote(pacote, TipoPacote.INICIAL)
-        assert result.valido is False
-        assert any("Bateria" in e for e in result.erros)
-
+        r = validar_pacote({**PACOTE_INICIAL_NORMAL, "bateria": 150}, TipoPacote.INICIAL)
+        assert not r.valido and any("Bateria" in e for e in r.erros)
     def test_bateria_negativa_final(self):
-        pacote = {**PACOTE_FINAL_SUCESSO, "bateria": -5}
-        result = validar_pacote(pacote, TipoPacote.FINAL)
-        assert result.valido is False
-
+        assert not validar_pacote({**PACOTE_FINAL_SUCESSO, "bateria": -5}, TipoPacote.FINAL).valido
     def test_movimentacao_sem_x(self):
-        result = validar_pacote(PACOTE_MOV_SEM_X, TipoPacote.MOVIMENTACAO)
-        assert result.valido is False
-        assert any("'x'" in e for e in result.erros)
-
+        r = validar_pacote(PACOTE_MOV_SEM_X, TipoPacote.MOVIMENTACAO)
+        assert not r.valido and any("'x'" in e for e in r.erros)
     def test_final_sem_vmed(self):
-        pacote = {
-            "id_corrida": 1,
-            "timestamp_ms": 30000,
-            "sucesso": True,
-            "bateria": 80,
-        }
-        result = validar_pacote(pacote, TipoPacote.FINAL)
-        assert result.valido is False
-        assert any("v_med" in e for e in result.erros)
-
+        r = validar_pacote(PACOTE_FINAL_SEM_VMED, TipoPacote.FINAL)
+        assert not r.valido and any("v_med" in e for e in r.erros)
     def test_final_vmed_negativo(self):
-        pacote = {**PACOTE_FINAL_SUCESSO, "v_med": -3.0}
-        result = validar_pacote(pacote, TipoPacote.FINAL)
-        assert result.valido is False
-        assert any("v_med" in e for e in result.erros)
-
+        r = validar_pacote({**PACOTE_FINAL_SUCESSO, "v_med": -3.0}, TipoPacote.FINAL)
+        assert not r.valido and any("v_med" in e for e in r.erros)
     def test_final_sucesso_nao_booleano(self):
-        pacote = {**PACOTE_FINAL_SUCESSO, "sucesso": "sim"}
-        result = validar_pacote(pacote, TipoPacote.FINAL)
-        assert result.valido is False
-        assert any("sucesso" in e for e in result.erros)
-
-
-# ===================================================================
-# Testes — Cálculo de velocidade de segmento
-# ===================================================================
+        r = validar_pacote({**PACOTE_FINAL_SUCESSO, "sucesso": "sim"}, TipoPacote.FINAL)
+        assert not r.valido and any("sucesso" in e for e in r.erros)
+    def test_w_fora_do_range(self):
+        r = validar_pacote({"tipo": 1, "timestamp_ms": 1000, "x": 0, "y": 0, "w": 16}, TipoPacote.MOVIMENTACAO)
+        assert not r.valido and any("w" in e for e in r.erros)
+    def test_w_float_rejeitado(self):
+        r = validar_pacote({"tipo": 1, "timestamp_ms": 1000, "x": 0, "y": 0, "w": 5.5}, TipoPacote.MOVIMENTACAO)
+        assert not r.valido and any("'w'" in e for e in r.erros)
+    def test_dimensao_invalida(self):
+        r = validar_pacote({**PACOTE_INICIAL_NORMAL, "dimensao": 5}, TipoPacote.INICIAL)
+        assert not r.valido and any("Dimensão" in e for e in r.erros)
 
 
 class TestCalcularVelocidadeSegmento:
-    """Testes para calcular_velocidade_segmento()."""
-
     def test_velocidade_basica(self):
-        # 1 célula em 1 segundo = CELL_SIZE_CM cm/s
-        vel = calcular_velocidade_segmento(0, 0, 0, 1, 0, 1000)
-        assert vel == pytest.approx(CELL_SIZE_CM, rel=1e-6)
-
+        assert calcular_velocidade_segmento(0, 0, 0, 1, 0, 1000) == pytest.approx(CELL_SIZE_CM, rel=1e-6)
     def test_velocidade_diagonal(self):
-        # diagonal de 1 célula = sqrt(2) * CELL_SIZE_CM em 1 segundo
-        vel = calcular_velocidade_segmento(0, 0, 0, 1, 1, 1000)
-        expected = math.sqrt(2) * CELL_SIZE_CM
-        assert vel == pytest.approx(expected, rel=1e-6)
-
+        assert calcular_velocidade_segmento(0, 0, 0, 1, 1, 1000) == pytest.approx(math.sqrt(2) * CELL_SIZE_CM, rel=1e-6)
     def test_delta_t_zero_retorna_none(self):
         assert calcular_velocidade_segmento(0, 0, 1000, 1, 0, 1000) is None
-
     def test_delta_t_negativo_retorna_none(self):
         assert calcular_velocidade_segmento(0, 0, 2000, 1, 0, 1000) is None
-
     def test_sem_deslocamento(self):
-        vel = calcular_velocidade_segmento(1, 1, 0, 1, 1, 1000)
-        assert vel == pytest.approx(0.0)
-
+        assert calcular_velocidade_segmento(1, 1, 0, 1, 1, 1000) == pytest.approx(0.0)
     def test_velocidade_nunca_negativa(self):
         vel = calcular_velocidade_segmento(0, 0, 0, 0, 0, 1000)
-        assert vel is not None
-        assert vel >= 0
-
-
-# ===================================================================
-# Testes — Estado inicial
-# ===================================================================
+        assert vel is not None and vel >= 0
 
 
 class TestCriarEstadoInicial:
-    """Testes para criar_estado_inicial()."""
-
     def test_estado_aguardando(self):
-        estado = criar_estado_inicial()
-        assert estado.status_corrida == StatusCorridaTelemetria.AGUARDANDO
-
+        assert criar_estado_inicial().status_corrida == StatusCorridaTelemetria.AGUARDANDO
     def test_campos_zerados(self):
-        estado = criar_estado_inicial()
-        assert estado.id_corrida_banco is None
-        assert estado.sessao_hardware_id is None
-        assert estado.bateria_atual is None
-        assert estado.velocidade_media is None
-        assert estado.tempo_decorrido_ms == 0
-        assert estado.tempo_final_ms is None
-        assert estado.alerta_bateria_critica is False
-        assert estado.alerta_possivel_parada_inesperada is False
-        assert estado.alerta_dado_invalido is False
-        assert estado.log_alertas == []
-
-
-# ===================================================================
-# Testes — Função agregadora (atualizar_indicadores)
-# ===================================================================
+        e = criar_estado_inicial()
+        assert e.id_corrida_banco is None and e.bateria_atual is None
+        assert e.velocidade_media is None and e.tempo_decorrido_ms == 0
+        assert not e.alerta_bateria_critica and e.log_alertas == []
 
 
 class TestAtualizarIndicadores:
-    """Testes para atualizar_indicadores()."""
-
     def test_pacote_inicial_atualiza_bateria(self):
-        estado = criar_estado_inicial()
-        novo = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-        assert novo.bateria_atual == 95
-        assert novo.status_corrida == StatusCorridaTelemetria.EM_ANDAMENTO
-
-    def test_pacote_inicial_seta_sessao_hardware_id(self):
-        estado = criar_estado_inicial()
-        novo = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-        assert novo.sessao_hardware_id == 1
+        novo = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_NORMAL)
+        assert novo.bateria_atual == 95 and novo.status_corrida == StatusCorridaTelemetria.EM_ANDAMENTO
 
     def test_pacote_movimentacao_atualiza_tempo(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-        estado = atualizar_indicadores(estado, PACOTES_MOVIMENTACAO_NORMAL[0])
-        assert estado.tempo_decorrido_ms == 1000
+        e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_NORMAL)
+        e = atualizar_indicadores(e, PACOTE_MOVIMENTACAO[0])
+        assert e.tempo_decorrido_ms == 1000
 
     def test_pacote_movimentacao_atualiza_velocidade_media(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-        # Primeiro pacote de mov: seta posição inicial, sem cálculo de vel
-        estado = atualizar_indicadores(estado, PACOTES_MOVIMENTACAO_NORMAL[0])
-        # Segundo pacote de mov: deslocamento de (0,0) para (1,0) em 1s
-        estado = atualizar_indicadores(estado, PACOTES_MOVIMENTACAO_NORMAL[1])
-        assert estado.velocidade_media is not None
-        assert estado.velocidade_media == pytest.approx(CELL_SIZE_CM, rel=1e-6)
+        e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_NORMAL)
+        e = atualizar_indicadores(e, PACOTE_MOVIMENTACAO[0])
+        e = atualizar_indicadores(e, PACOTE_MOVIMENTACAO[1])
+        assert e.velocidade_media is not None and e.velocidade_media == pytest.approx(CELL_SIZE_CM, rel=1e-6)
 
     def test_pacote_invalido_nao_altera_indicadores(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-        bateria_antes = estado.bateria_atual
-        tempo_antes = estado.tempo_decorrido_ms
-
-        # Enviar pacote inválido
-        estado_apos = atualizar_indicadores(estado, {"campo_errado": 42})
-        assert estado_apos.bateria_atual == bateria_antes
-        assert estado_apos.tempo_decorrido_ms == tempo_antes
-        assert estado_apos.alerta_dado_invalido is True
+        e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_NORMAL)
+        bat, t = e.bateria_atual, e.tempo_decorrido_ms
+        e2 = atualizar_indicadores(e, {"campo_errado": 42})
+        assert e2.bateria_atual == bat and e2.tempo_decorrido_ms == t and e2.alerta_dado_invalido
 
     def test_pacote_none_nao_altera_indicadores(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-        estado_apos = atualizar_indicadores(estado, None)
-        assert estado_apos.alerta_dado_invalido is True
-        assert estado_apos.bateria_atual == 95
+        e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_NORMAL)
+        e2 = atualizar_indicadores(e, None)
+        assert e2.alerta_dado_invalido and e2.bateria_atual == 95
 
     def test_timestamp_regressivo_ignorado(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-        estado = atualizar_indicadores(estado, PACOTES_MOVIMENTACAO_NORMAL[0])
-        estado = atualizar_indicadores(estado, PACOTES_MOVIMENTACAO_NORMAL[1])
-
-        tempo_antes = estado.tempo_decorrido_ms
-        # Pacote com timestamp menor que o último válido
-        estado_apos = atualizar_indicadores(estado, PACOTE_TIMESTAMP_REGRESSIVO)
-        assert estado_apos.tempo_decorrido_ms == tempo_antes
-        assert estado_apos.alerta_dado_invalido is True
+        e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_NORMAL)
+        e = atualizar_indicadores(e, PACOTE_MOVIMENTACAO[0])
+        e = atualizar_indicadores(e, PACOTE_MOVIMENTACAO[1])
+        t = e.tempo_decorrido_ms
+        e2 = atualizar_indicadores(e, PACOTE_TIMESTAMP_REGRESSIVO)
+        assert e2.tempo_decorrido_ms == t and e2.alerta_dado_invalido
 
     def test_pacote_final_fixa_tempo_final(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-        for mov in PACOTES_MOVIMENTACAO_NORMAL:
-            estado = atualizar_indicadores(estado, mov)
-
-        estado = atualizar_indicadores(estado, PACOTE_FINAL_SUCESSO)
-        assert estado.tempo_final_ms == 30000
-        assert estado.tempo_decorrido_ms == 30000
+        e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_NORMAL)
+        for m in PACOTE_MOVIMENTACAO:
+            e = atualizar_indicadores(e, m)
+        e = atualizar_indicadores(e, PACOTE_FINAL_SUCESSO)
+        assert e.tempo_final_ms == 30000 and e.tempo_decorrido_ms == 30000
 
     def test_pacote_final_usa_vmed_como_velocidade_final(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-        for mov in PACOTES_MOVIMENTACAO_NORMAL:
-            estado = atualizar_indicadores(estado, mov)
-
-        estado = atualizar_indicadores(estado, PACOTE_FINAL_SUCESSO)
-        assert estado.velocidade_media == 12.5
+        e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_NORMAL)
+        for m in PACOTE_MOVIMENTACAO:
+            e = atualizar_indicadores(e, m)
+        e = atualizar_indicadores(e, PACOTE_FINAL_SUCESSO)
+        assert e.velocidade_media == 12.5
 
     def test_pacote_final_atualiza_status_concluida(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-        estado = atualizar_indicadores(estado, PACOTE_FINAL_SUCESSO)
-        assert estado.status_corrida == StatusCorridaTelemetria.CONCLUIDA
-        assert estado.sucesso is True
+        e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_NORMAL)
+        e = atualizar_indicadores(e, PACOTE_FINAL_SUCESSO)
+        assert e.status_corrida == StatusCorridaTelemetria.CONCLUIDA and e.sucesso is True
 
     def test_pacote_final_falha(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-        estado = atualizar_indicadores(estado, PACOTE_FINAL_BATERIA_CRITICA)
-        assert estado.status_corrida == StatusCorridaTelemetria.FALHA
-        assert estado.sucesso is False
+        e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_NORMAL)
+        e = atualizar_indicadores(e, PACOTE_FINAL_BATERIA_CRITICA)
+        assert e.status_corrida == StatusCorridaTelemetria.FALHA and e.sucesso is False
 
     def test_bateria_critica_ativa_alerta(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_BATERIA_CRITICA)
-        assert estado.alerta_bateria_critica is True
-        assert estado.bateria_atual == 10
-        assert estado.log_alertas[-1].tipo == TipoAlertaTelemetria.BATERIA_CRITICA
+        e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_BATERIA_CRITICA)
+        assert e.alerta_bateria_critica and e.bateria_atual == 10
+        assert e.log_alertas[-1].tipo == TipoAlertaTelemetria.BATERIA_CRITICA
 
     def test_bateria_normal_nao_ativa_alerta(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-        assert estado.alerta_bateria_critica is False
+        assert not atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_NORMAL).alerta_bateria_critica
 
     def test_bateria_critica_exige_threshold_inclusivo(self):
         assert BATERIA_CRITICA_THRESHOLD == 10.0
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_BATERIA_CRITICA)
-        assert estado.alerta_bateria_critica is True
+        assert atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_BATERIA_CRITICA).alerta_bateria_critica
 
     def test_alertas_nao_mutam_estado_original(self):
-        estado = criar_estado_inicial()
-        novo_estado = atualizar_indicadores(estado, PACOTE_INICIAL_BATERIA_CRITICA)
-        assert estado.log_alertas == []
-        assert len(novo_estado.log_alertas) == 1
+        e = criar_estado_inicial()
+        novo = atualizar_indicadores(e, PACOTE_INICIAL_BATERIA_CRITICA)
+        assert e.log_alertas == [] and len(novo.log_alertas) == 1
 
     def test_bateria_critica_nao_duplica_log_enquanto_persistir(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_BATERIA_CRITICA)
-        total_alertas = len(estado.log_alertas)
-
-        estado = atualizar_indicadores(
-            estado,
-            {
-                "id_corrida": 2,
-                "timestamp_ms": 1000,
-                "x": 0,
-                "y": 0,
-                "w": 0,
-                "bateria": 9,
-            },
-        )
-        assert len(estado.log_alertas) == total_alertas
+        e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_BATERIA_CRITICA)
+        n = len(e.log_alertas)
+        e = atualizar_indicadores(e, {"tipo": 1, "timestamp_ms": 1000, "x": 0, "y": 0, "w": 0})
+        assert len(e.log_alertas) == n
 
     def test_bateria_critica_no_pacote_final(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-        estado = atualizar_indicadores(estado, PACOTE_FINAL_BATERIA_CRITICA)
-        assert estado.alerta_bateria_critica is True
-        assert estado.bateria_atual == 3
-
-    def test_movimentacao_com_bateria_atualiza(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-
-        pacote_mov_com_bateria = {
-            **PACOTES_MOVIMENTACAO_NORMAL[0],
-            "bateria": 88,
-        }
-        estado = atualizar_indicadores(estado, pacote_mov_com_bateria)
-        assert estado.bateria_atual == 88
-
-    def test_movimentacao_sem_bateria_mantem_ultima(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-        # Movimentação sem campo bateria
-        estado = atualizar_indicadores(estado, PACOTES_MOVIMENTACAO_NORMAL[0])
-        assert estado.bateria_atual == 95  # mantém do pacote inicial
+        e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_NORMAL)
+        e = atualizar_indicadores(e, PACOTE_FINAL_BATERIA_CRITICA)
+        assert e.alerta_bateria_critica and e.bateria_atual == 3
 
     def test_parada_inesperada_dispara_apos_mais_de_tres_segundos(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(
-            estado,
-            {
-                "id_corrida": 3,
-                "timestamp_ms": 0,
-                "dimensao": 4,
-                "tentativa": 1,
-                "bateria": 85,
-            },
-        )
-
-        for pacote in PACOTES_MOVIMENTACAO_PARADA:
-            estado = atualizar_indicadores(estado, pacote)
-
-        assert PARADA_INESPERADA_THRESHOLD_MS == 3000
-        assert estado.alerta_possivel_parada_inesperada is True
-        assert estado.log_alertas[-1].tipo == (
-            TipoAlertaTelemetria.POSSIVEL_PARADA_INESPERADA
-        )
-        assert estado.log_alertas[-1].timestamp_ms == 4501
+        e = atualizar_indicadores(criar_estado_inicial(), {"tipo": 0, "timestamp_ms": 0, "dimensao": 4, "bateria": 85})
+        for p in PACOTE_MOVIMENTACAO_PARADA:
+            e = atualizar_indicadores(e, p)
+        assert e.alerta_possivel_parada_inesperada
+        assert e.log_alertas[-1].tipo == TipoAlertaTelemetria.POSSIVEL_PARADA_INESPERADA
 
     def test_parada_inesperada_nao_dispara_com_tres_segundos_exatos(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(
-            estado,
-            {
-                "id_corrida": 3,
-                "timestamp_ms": 0,
-                "dimensao": 4,
-                "tentativa": 1,
-                "bateria": 85,
-            },
-        )
-        estado = atualizar_indicadores(estado, PACOTES_MOVIMENTACAO_PARADA[0])
-        estado = atualizar_indicadores(
-            estado,
-            {"id_corrida": 3, "timestamp_ms": 4000, "x": 0, "y": 0, "w": 0},
-        )
-        assert estado.alerta_possivel_parada_inesperada is False
+        e = atualizar_indicadores(criar_estado_inicial(), {"tipo": 0, "timestamp_ms": 0, "dimensao": 4, "bateria": 85})
+        e = atualizar_indicadores(e, PACOTE_MOVIMENTACAO_PARADA[0])
+        e = atualizar_indicadores(e, {"tipo": 1, "timestamp_ms": 4000, "x": 0, "y": 0, "w": 0})
+        assert not e.alerta_possivel_parada_inesperada
 
     def test_parada_inesperada_nao_dispara_quando_corrida_nao_esta_ativa(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-        estado.status_corrida = StatusCorridaTelemetria.CONCLUIDA
-
-        for pacote in (
-            PACOTES_MOVIMENTACAO_PARADA[0],
-            {"id_corrida": 1, "timestamp_ms": 5000, "x": 0, "y": 0, "w": 0},
-        ):
-            estado = atualizar_indicadores(estado, pacote)
-
-        assert estado.alerta_possivel_parada_inesperada is False
-        assert not any(
-            alerta.tipo == TipoAlertaTelemetria.POSSIVEL_PARADA_INESPERADA
-            for alerta in estado.log_alertas
-        )
+        e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_NORMAL)
+        e.status_corrida = StatusCorridaTelemetria.CONCLUIDA
+        for p in (PACOTE_MOVIMENTACAO_PARADA[0], {"tipo": 1, "timestamp_ms": 5000, "x": 0, "y": 0, "w": 0}):
+            e = atualizar_indicadores(e, p)
+        assert not e.alerta_possivel_parada_inesperada
 
     def test_parada_inesperada_e_limpa_ao_encerrar_corrida(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(
-            estado,
-            {
-                "id_corrida": 3,
-                "timestamp_ms": 0,
-                "dimensao": 4,
-                "tentativa": 1,
-                "bateria": 85,
-            },
-        )
-        for pacote in PACOTES_MOVIMENTACAO_PARADA:
-            estado = atualizar_indicadores(estado, pacote)
-
-        assert estado.alerta_possivel_parada_inesperada is True
-        estado = atualizar_indicadores(estado, PACOTE_FINAL_SUCESSO)
-        assert estado.alerta_possivel_parada_inesperada is False
-
-
-# ===================================================================
-# Testes — Cenários simulados completos
-# ===================================================================
+        e = atualizar_indicadores(criar_estado_inicial(), {"tipo": 0, "timestamp_ms": 0, "dimensao": 4, "bateria": 85})
+        for p in PACOTE_MOVIMENTACAO_PARADA:
+            e = atualizar_indicadores(e, p)
+        assert e.alerta_possivel_parada_inesperada
+        e = atualizar_indicadores(e, PACOTE_FINAL_SUCESSO)
+        assert not e.alerta_possivel_parada_inesperada
 
 
 class TestCenariosSimulados:
-    """Testes de integração com sequências completas de pacotes."""
-
     def test_corrida_normal_completa(self):
-        """Cenário 1: pacote inicial → movimentações → pacote final com sucesso."""
-        estado = criar_estado_inicial()
-
-        # Início
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-        assert estado.status_corrida == StatusCorridaTelemetria.EM_ANDAMENTO
-        assert estado.bateria_atual == 95
-
-        # Movimentações
-        for mov in PACOTES_MOVIMENTACAO_NORMAL:
-            estado = atualizar_indicadores(estado, mov)
-
-        assert estado.tempo_decorrido_ms == 5000
-        assert estado.velocidade_media is not None
-        assert estado.velocidade_media > 0
-
-        # Final
-        estado = atualizar_indicadores(estado, PACOTE_FINAL_SUCESSO)
-        assert estado.status_corrida == StatusCorridaTelemetria.CONCLUIDA
-        assert estado.sucesso is True
-        assert estado.tempo_final_ms == 30000
-        assert estado.velocidade_media == 12.5
-        assert estado.bateria_atual == 80
-        assert estado.alerta_bateria_critica is False
+        e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_NORMAL)
+        for m in PACOTE_MOVIMENTACAO:
+            e = atualizar_indicadores(e, m)
+        e = atualizar_indicadores(e, PACOTE_FINAL_SUCESSO)
+        assert e.status_corrida == StatusCorridaTelemetria.CONCLUIDA
+        assert e.sucesso and e.tempo_final_ms == 30000 and e.velocidade_media == 12.5
 
     def test_corrida_com_bateria_critica(self):
-        """Cenário 2: bateria crítica desde o início."""
-        estado = criar_estado_inicial()
-
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_BATERIA_CRITICA)
-        assert estado.alerta_bateria_critica is True
-
-        estado = atualizar_indicadores(estado, PACOTE_FINAL_BATERIA_CRITICA)
-        assert estado.alerta_bateria_critica is True
-        assert estado.bateria_atual == 3
-        assert estado.status_corrida == StatusCorridaTelemetria.FALHA
+        e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_BATERIA_CRITICA)
+        e = atualizar_indicadores(e, PACOTE_FINAL_BATERIA_CRITICA)
+        assert e.alerta_bateria_critica and e.bateria_atual == 3 and e.status_corrida == StatusCorridaTelemetria.FALHA
 
     def test_corrida_com_parada_inesperada_registra_log(self):
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(
-            estado,
-            {
-                "id_corrida": 3,
-                "timestamp_ms": 0,
-                "dimensao": 4,
-                "tentativa": 1,
-                "bateria": 85,
-            },
-        )
-
-        for pacote in PACOTES_MOVIMENTACAO_PARADA:
-            estado = atualizar_indicadores(estado, pacote)
-
-        assert estado.alerta_possivel_parada_inesperada is True
-        assert estado.log_alertas[-1].tipo == (
-            TipoAlertaTelemetria.POSSIVEL_PARADA_INESPERADA
-        )
+        e = atualizar_indicadores(criar_estado_inicial(), {"tipo": 0, "timestamp_ms": 0, "dimensao": 4, "bateria": 85})
+        for p in PACOTE_MOVIMENTACAO_PARADA:
+            e = atualizar_indicadores(e, p)
+        assert e.alerta_possivel_parada_inesperada
+        assert e.log_alertas[-1].tipo == TipoAlertaTelemetria.POSSIVEL_PARADA_INESPERADA
 
     def test_corrida_com_pacotes_invalidos(self):
-        """Cenário 3: pacotes inválidos intercalados não afetam o estado."""
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-
-        # Pacote inválido sem timestamp
-        estado_temp = atualizar_indicadores(estado, PACOTE_SEM_TIMESTAMP)
-        assert estado_temp.alerta_dado_invalido is True
-        assert estado_temp.tempo_decorrido_ms == estado.tempo_decorrido_ms
-
-        # Pacote inválido sem id_corrida
-        estado_temp = atualizar_indicadores(estado, PACOTE_SEM_ID_CORRIDA)
-        assert estado_temp.alerta_dado_invalido is True
-
-        # Pacote inválido de mov sem x
-        estado_temp = atualizar_indicadores(estado, PACOTE_MOV_SEM_X)
-        assert estado_temp.alerta_dado_invalido is True
+        e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_NORMAL)
+        for bad in (PACOTE_SEM_TIMESTAMP, PACOTE_SEM_TIPO, PACOTE_MOV_SEM_X):
+            e2 = atualizar_indicadores(e, bad)
+            assert e2.alerta_dado_invalido
 
     def test_corrida_com_timestamp_inconsistente(self):
-        """Cenário 4: timestamp regressivo é rejeitado."""
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-        estado = atualizar_indicadores(estado, PACOTES_MOVIMENTACAO_NORMAL[0])  # ts=1000
-        estado = atualizar_indicadores(estado, PACOTES_MOVIMENTACAO_NORMAL[1])  # ts=2000
-
-        # Timestamp regressivo (500 < 2000)
-        estado_apos = atualizar_indicadores(estado, PACOTE_TIMESTAMP_REGRESSIVO)
-        assert estado_apos.alerta_dado_invalido is True
-        assert estado_apos.tempo_decorrido_ms == 2000  # não atualizou
+        e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_NORMAL)
+        e = atualizar_indicadores(e, PACOTE_MOVIMENTACAO[0])
+        e = atualizar_indicadores(e, PACOTE_MOVIMENTACAO[1])
+        e2 = atualizar_indicadores(e, PACOTE_TIMESTAMP_REGRESSIVO)
+        assert e2.alerta_dado_invalido and e2.tempo_decorrido_ms == 2000
 
     def test_estado_nao_mutado_por_pacote_invalido(self):
-        """Garante que o estado original não é mutado pela função."""
-        estado = criar_estado_inicial()
-        estado = atualizar_indicadores(estado, PACOTE_INICIAL_NORMAL)
-
-        estado_congelado = estado.model_copy()
-        _ = atualizar_indicadores(estado, {"invalido": True})
-
-        # Estado original deve estar intacto
-        assert estado.bateria_atual == estado_congelado.bateria_atual
-        assert estado.tempo_decorrido_ms == estado_congelado.tempo_decorrido_ms
+        e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL_NORMAL)
+        ec = e.model_copy()
+        _ = atualizar_indicadores(e, {"invalido": True})
+        assert e.bateria_atual == ec.bateria_atual and e.tempo_decorrido_ms == ec.tempo_decorrido_ms
