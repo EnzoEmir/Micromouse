@@ -9,6 +9,17 @@ via HTTP POST para o backend — exatamente como a ESP32 faria.
 O frontend recebe cada movimento em tempo real via WebSocket e renderiza
 o caminho, as paredes e o rastro de células visitadas.
 
+Pacotes seguem a especificação do telemetria.md:
+  tipo=0  →  Configuração Inicial
+  tipo=1  →  Movimentação / Descoberta de Paredes
+  tipo=2  →  Rota Otimizada
+  tipo=3  →  Fim de Corrida
+
+Coordenadas seguem o sistema cartesiano:
+  - Origem (0,0) no canto inferior esquerdo
+  - X cresce para a direita
+  - Y cresce para cima
+
 Uso:
     python3 simulate_maze.py            # labirinto 16x16 (padrão)
     python3 simulate_maze.py --size 8   # labirinto 8x8
@@ -29,7 +40,7 @@ API_URL = "http://localhost:8000/api/telemetria/pacote"
 # Representação do labirinto
 # ---------------------------------------------------------------------------
 
-# Bitmask de paredes — mesma convenção da ESP32
+# Bitmask de paredes — mesma convenção da ESP32 e do telemetria.md
 NORTH = 1   # bit 0
 SOUTH = 2   # bit 1
 EAST  = 4   # bit 2
@@ -37,14 +48,14 @@ WEST  = 8   # bit 3
 
 OPPOSITE = {NORTH: SOUTH, SOUTH: NORTH, EAST: WEST, WEST: EAST}
 
-# Deslocamento (dx, dy) no sistema do grid:
-#   - x cresce para a direita (col)
-#   - y cresce para baixo (row) — compatível com como o frontend renderiza
+# Deslocamento (dx, dy) no sistema cartesiano:
+#   - x cresce para a direita (Leste)
+#   - y cresce para cima (Norte) — conforme telemetria.md
 DELTA = {
-    NORTH: (0, -1),  # y diminui = sobe no grid
-    SOUTH: (0,  1),  # y aumenta = desce no grid
-    EAST:  (1,  0),  # x aumenta = direita
-    WEST:  (-1, 0),  # x diminui = esquerda
+    NORTH: (0,  -1),  # Norte = y++ (sobe)
+    SOUTH: (0, 1),  # Sul   = y-- (desce)
+    EAST:  (1,  0),  # Leste = x++ (direita)
+    WEST:  (-1, 0),  # Oeste = x-- (esquerda)
 }
 
 
@@ -53,6 +64,8 @@ def generate_maze(size: int) -> list[list[int]]:
 
     Retorna uma matriz size×size onde cada célula contém um bitmask
     das paredes presentes (15 = todas as paredes).
+
+    A indexação é walls[y][x] com y=0 no canto inferior.
     """
     # Começa com todas as paredes fechadas
     walls = [[NORTH | SOUTH | EAST | WEST for _ in range(size)] for _ in range(size)]
@@ -118,7 +131,7 @@ def send_packet(data: dict, label: str = "") -> bool:
         if r.status_code in (200, 201):
             return True
         else:
-            print(f"  ⚠ {label} → HTTP {r.status_code}: {r.text[:120]}")
+            print(f"  ⚠ {label} → HTTP {r.status_code}: {r.text[:200]}")
             return False
     except requests.RequestException as e:
         print(f"  ✗ {label} → Erro de conexão: {e}")
@@ -164,14 +177,13 @@ def main():
     print(f"   ✓ {len(steps)} movimentos, {unique_cells} células únicas visitadas.")
     print()
 
-    # 3. Enviar pacote inicial
-    print("📡 Enviando pacote INICIAL...")
+    # 3. Enviar pacote INICIAL (tipo=0) conforme telemetria.md
+    print("📡 Enviando pacote INICIAL (tipo=0)...")
     initial = {
-        "id_corrida": corrida_id,
+        "tipo": 0,
         "timestamp_ms": 0,
         "dimensao": size,
-        "tentativa": 1,
-        "bateria": 100.0,
+        "bateria": 100,
     }
     if not send_packet(initial, "INICIAL"):
         print("   ✗ Falha ao enviar pacote inicial. Backend online?")
@@ -180,7 +192,7 @@ def main():
     print()
     time.sleep(1)
 
-    # 4. Enviar cada passo da exploração
+    # 4. Enviar cada passo da exploração (tipo=1) conforme telemetria.md
     print(f"🐭 Iniciando exploração ({len(steps)} passos)...")
     print(f"   Acompanhe em tempo real no frontend!")
     print()
@@ -189,7 +201,7 @@ def main():
     for i, (x, y, w) in enumerate(steps):
         ts += int(delay * 1000)
         pkt = {
-            "id_corrida": corrida_id,
+            "tipo": 1,
             "timestamp_ms": ts,
             "x": x,
             "y": y,
@@ -205,15 +217,15 @@ def main():
     print()
     print()
 
-    # 5. Enviar pacote FINAL
-    print("🏁 Enviando pacote FINAL...")
+    # 5. Enviar pacote FINAL (tipo=3) conforme telemetria.md
+    print("🏁 Enviando pacote FINAL (tipo=3)...")
     ts += 1000
     final = {
-        "id_corrida": corrida_id,
+        "tipo": 3,
         "timestamp_ms": ts,
         "sucesso": True,
         "v_med": 0.22,
-        "bateria": 85.0,
+        "bateria": 85,
     }
     send_packet(final, "FINAL")
     print("   ✓ Corrida finalizada!")

@@ -13,7 +13,10 @@ export const mockAguardando: IndicadoresDesempenho = {
   sucesso: null,
   ultimo_timestamp_ms: null,
   alerta_bateria_critica: false,
+  alerta_possivel_parada_inesperada: false,
   alerta_dado_invalido: false,
+  alerta_temperatura_critica: false,
+  log_alertas: [],
 };
 
 export const mockEmAndamento: IndicadoresDesempenho = {
@@ -29,7 +32,10 @@ export const mockEmAndamento: IndicadoresDesempenho = {
   sucesso: null,
   ultimo_timestamp_ms: Date.now(),
   alerta_bateria_critica: false,
+  alerta_possivel_parada_inesperada: false,
   alerta_dado_invalido: false,
+  alerta_temperatura_critica: false,
+  log_alertas: [],
 };
 
 export const mockBateriaCritica: IndicadoresDesempenho = {

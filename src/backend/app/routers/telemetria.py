@@ -294,7 +294,7 @@ async def receber_pacote_telemetria(
         evento_movimentacao = {
             "type": "MOVIMENTACAO",
             "data": {
-                "id_corrida": pacote.get("id_corrida"),
+                "id_corrida": novo_estado.id_corrida_banco,
                 "timestamp_ms": pacote.get("timestamp_ms"),
                 "x": pacote.get("x"),
                 "y": pacote.get("y"),
