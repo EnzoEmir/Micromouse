@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTelemetria } from "../../hooks/useTelemetria";
-import { createMaze, isInsideMaze, markVisited, markWall, normalizePathToOrthogonal, hasWallBetween } from "./mazeUtils";
+import { createMaze, isInsideMaze, markVisited, markWall, normalizePathToOrthogonal, hasWallBetween, findGoalArea } from "./mazeUtils";
 import type { Cell, Direction, Position } from "./types";
 
 const DEFAULT_GRID_SIZE = 8;
@@ -62,6 +62,8 @@ export default function MazeViewer() {
   const pathPointsString = pathPoints
     .map((point) => `${point.col + 0.5},${point.row + 0.5}`)
     .join(" ");
+
+  const goalAreaCells = findGoalArea(displayMaze);
 
   const cloneMaze = (source: Cell[][]) =>
     source.map((row) =>
@@ -313,13 +315,19 @@ export default function MazeViewer() {
                   const isOnPath = displayPath.some((step) =>
                     positionsEqual(step, cellPosition),
                   );
+                  const isGoal = goalAreaCells.some((goalCell) => 
+                    positionsEqual(goalCell, cellPosition)
+                  );
+                  
                   const backgroundColor = isCurrent
                     ? "rgb(125 211 252)"
-                    : cell.visited
-                      ? "rgb(186 230 253)"
-                      : isOnPath
-                        ? "rgb(224 242 254)"
-                        : "rgb(255 255 255)";
+                    : isGoal
+                      ? "rgb(250 204 21)" // amarelo forte para destacar bem o objetivo
+                      : cell.visited
+                        ? "rgb(186 230 253)"
+                        : isOnPath
+                          ? "rgb(224 242 254)"
+                          : "rgb(255 255 255)";
                   const wallShadows = [
                     cell.walls.north
                       ? `inset 0 2px 0 0 ${wallShadowColor}`
