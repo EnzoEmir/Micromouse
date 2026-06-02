@@ -35,7 +35,6 @@ type ParedesCelula = {
   oeste: boolean;
 };
 
-/** Estado inicial dos indicadores (espelha criar_estado_inicial do backend). */
 const ESTADO_INICIAL: IndicadoresDesempenho = {
   id_corrida_banco: null,
   sessao_hardware_id: null,
@@ -49,12 +48,14 @@ const ESTADO_INICIAL: IndicadoresDesempenho = {
   sucesso: null,
   ultimo_timestamp_ms: null,
   alerta_bateria_critica: false,
+  alerta_possivel_parada_inesperada: false,
   alerta_dado_invalido: false,
+  alerta_temperatura_critica: false,
+  log_alertas: [],
 };
 
 const CONFIG_SESSAO_INICIAL: ConfigSessao = {
   dimensao: null,
-  tentativa: null,
 };
 
 /** Intervalo entre tentativas de reconexão (ms). */
@@ -230,25 +231,27 @@ export function useTelemetria(): UseTelemetriaReturn {
         const pacote = parsed?.data;
 
         if (parsed.type === "SESSAO_INICIADA") {
-          const { dimensao, tentativa, ...indicadoresData } = pacote;
+          const { dimensao, ...indicadoresData } = pacote;
           setIndicadores(indicadoresData as IndicadoresDesempenho);
-          setConfigSessao({ dimensao, tentativa });
+          setConfigSessao({ dimensao });
           setStatusConexao("online");
           setMensagemStatusConexao(null);
-        } else if (parsed.type === "ATUALIZACAO_TELEMETRIA") {
+        } else if (
+          parsed.type === "ATUALIZACAO_TELEMETRIA" ||
+          parsed.type === "HEARTBEAT"
+        ) {
           setIndicadores(pacote as IndicadoresDesempenho);
           setStatusConexao("online");
           setMensagemStatusConexao(null);
-          // console.log("Payload: ", payload);
-          // console.log("Pacote ", pacote);
-          if (isMovimentacaoPayload(payload)) {
-            const mov = {
-              ...payload,
-              paredes: decodificarParedes(payload.w),
-            };
-            setUltimaMovimentacao(mov);
-            setFilaMovimentacoes((prev) => [...prev, mov]);
-          }
+        } else if (parsed.type === "ALERTA_TEMPERATURA_CRITICA") {
+          const { temp_c, ...indicadoresData } = pacote;
+          setIndicadores(indicadoresData as IndicadoresDesempenho);
+          setStatusConexao("online");
+          setMensagemStatusConexao(null);
+          toast.error(`Alerta Crítico: Temperatura em ${temp_c}ºC! Corrida abortada.`, {
+            id: "alerta-temperatura",
+            duration: 5000,
+          });
         }
       } catch (e) {
         console.error("[useTelemetria] Erro ao processar mensagem:", e);

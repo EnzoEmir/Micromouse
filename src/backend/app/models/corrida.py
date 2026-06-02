@@ -31,7 +31,6 @@ class Corrida(SQLModel, table=True):
     id_labirinto:int,
     desafio_cumprido:bool,
     sessao_hardware_id:int,
-    tentativa:int,
     bateria_inicial:int,
     bateria_final:int,
     """
@@ -76,7 +75,6 @@ class Corrida(SQLModel, table=True):
         default=False
     )
     sessao_hardware_id: Optional[int] = None
-    tentativa: Optional[int] = None
     bateria_inicial: Optional[int] = None
     bateria_final: Optional[int] = None
 

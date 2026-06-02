@@ -11,7 +11,8 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.database import get_session
 from app.config import settings
-from app.routers.telemetria import estados_ativos
+from app.routers.telemetria import estados_ativos, _set_sessao_ativa_id
+import app.routers.telemetria as _tel_router
 from app.services.connection_monitor import connection_monitor
 
 # Detecta se está dentro de um container Docker
@@ -111,7 +112,11 @@ def client_fixture(session: Session):
 def limpar_estados_ativos():
     """Isola o estado em memória da telemetria entre testes."""
     estados_ativos.clear()
+    _set_sessao_ativa_id(None)
+    _tel_router._contador_sessao = 0
     connection_monitor.clear()
     yield
     estados_ativos.clear()
+    _set_sessao_ativa_id(None)
+    _tel_router._contador_sessao = 0
     connection_monitor.clear()
