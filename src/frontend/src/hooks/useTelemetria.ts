@@ -77,6 +77,10 @@ export interface UseTelemetriaReturn {
   erro: string | null;
   /** Ultima movimentacao recebida (mudanca de celula). */
   ultimaMovimentacao: MovimentacaoTelemetria | null;
+  /** Fila com todas as movimentacoes recebidas na sessao (para nao perder nada no render). */
+  filaMovimentacoes: MovimentacaoTelemetria[];
+  /** Limpa a fila apos processar */
+  limparFilaMovimentacoes: () => void;
 }
 
 export function useTelemetria(): UseTelemetriaReturn {
@@ -101,6 +105,13 @@ export function useTelemetria(): UseTelemetriaReturn {
   >(null);
   const [ultimaMovimentacao, setUltimaMovimentacao] =
     useState<MovimentacaoTelemetria | null>(null);
+  const [filaMovimentacoes, setFilaMovimentacoes] = useState<
+    MovimentacaoTelemetria[]
+  >([]);
+
+  const limparFilaMovimentacoes = useCallback(() => {
+    setFilaMovimentacoes([]);
+  }, []);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -206,10 +217,12 @@ export function useTelemetria(): UseTelemetriaReturn {
         ) {
           // console.log("[useTelemetria] Movimentação recebida:", payload);
           if (isMovimentacaoPayload(payload)) {
-            setUltimaMovimentacao({
+            const mov = {
               ...payload,
               paredes: decodificarParedes(payload.w),
-            });
+            };
+            setUltimaMovimentacao(mov);
+            setFilaMovimentacoes((prev) => [...prev, mov]);
           }
           return;
         }
@@ -229,10 +242,12 @@ export function useTelemetria(): UseTelemetriaReturn {
           // console.log("Payload: ", payload);
           // console.log("Pacote ", pacote);
           if (isMovimentacaoPayload(payload)) {
-            setUltimaMovimentacao({
+            const mov = {
               ...payload,
               paredes: decodificarParedes(payload.w),
-            });
+            };
+            setUltimaMovimentacao(mov);
+            setFilaMovimentacoes((prev) => [...prev, mov]);
           }
         }
       } catch (e) {
@@ -288,5 +303,7 @@ export function useTelemetria(): UseTelemetriaReturn {
     conectado,
     erro,
     ultimaMovimentacao,
+    filaMovimentacoes,
+    limparFilaMovimentacoes,
   };
 }

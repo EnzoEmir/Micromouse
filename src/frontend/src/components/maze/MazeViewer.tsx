@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTelemetria } from "../../hooks/useTelemetria";
-import { createMaze, isInsideMaze, markVisited, markWall } from "./mazeUtils";
+import { createMaze, isInsideMaze, markVisited, markWall, normalizePathToOrthogonal, hasWallBetween } from "./mazeUtils";
 import type { Cell, Direction, Position } from "./types";
 
 const DEFAULT_GRID_SIZE = 8;
@@ -10,7 +10,7 @@ const positionsEqual = (a: Position, b: Position) =>
   a.row === b.row && a.col === b.col;
 
 export default function MazeViewer() {
-  const { ultimaMovimentacao, configSessao, indicadores, statusConexao } =
+  const { filaMovimentacoes, limparFilaMovimentacoes, configSessao, indicadores, statusConexao } =
     useTelemetria();
   // Estado principal da corrida e do labirinto.
   const [gridSize, setGridSize] = useState(DEFAULT_GRID_SIZE);
@@ -53,10 +53,12 @@ export default function MazeViewer() {
         : "min(60vmin, 360px)";
   const wallShadowColor = "rgb(9 9 11)";
   const origin = { row: 0, col: 0 };
-  const pathPoints = [origin, ...displayPath];
-  if (!positionsEqual(pathPoints[pathPoints.length - 1], displayPosition)) {
-    pathPoints.push(displayPosition);
+  const rawPathPoints = [origin, ...displayPath];
+  if (!positionsEqual(rawPathPoints[rawPathPoints.length - 1], displayPosition)) {
+    rawPathPoints.push(displayPosition);
   }
+  // Normaliza o trajeto para evitar linhas diagonais entre células.
+  const pathPoints = normalizePathToOrthogonal(rawPathPoints, displayMaze);
   const pathPointsString = pathPoints
     .map((point) => `${point.col + 0.5},${point.row + 0.5}`)
     .join(" ");
@@ -134,63 +136,100 @@ export default function MazeViewer() {
   }, [configSessao.dimensao, gridSize]);
 
   useEffect(() => {
-    if (!ultimaMovimentacao) {
+    if (filaMovimentacoes.length === 0) {
       return;
     }
 
-    if (sessionIdRef.current !== ultimaMovimentacao.id_corrida) {
-      sessionIdRef.current = ultimaMovimentacao.id_corrida;
-      resetRunState(gridSize);
+    let nextMaze = mazeRef.current;
+    let nextPath = [...pathRef.current];
+    let nextPosition = positionRef.current;
+    let nextDirection = directionRef.current;
+    let statusChanged = false;
+
+    for (const mov of filaMovimentacoes) {
+      if (sessionIdRef.current !== mov.id_corrida) {
+        sessionIdRef.current = mov.id_corrida;
+        // Reinicia variaveis locais (equivalente ao resetRunState, para não agendar varios renders)
+        stepRef.current = 0;
+        setSessionStatus("idle");
+        nextMaze = createMaze(gridSize);
+        nextPath = [];
+        nextPosition = { row: 0, col: 0 };
+        nextDirection = "east";
+        setViewMode("live");
+        setIsHistoryOpen(false);
+      }
+
+      const currentTarget = {
+        row: mov.y,
+        col: mov.x,
+      };
+
+      if (!isInsideMaze(currentTarget, gridSize)) {
+        continue;
+      }
+
+      if (currentTarget.row === nextPosition.row - 1) {
+        nextDirection = "north";
+      } else if (currentTarget.row === nextPosition.row + 1) {
+        nextDirection = "south";
+      } else if (currentTarget.col === nextPosition.col + 1) {
+        nextDirection = "east";
+      } else if (currentTarget.col === nextPosition.col - 1) {
+        nextDirection = "west";
+      }
+
+      if (mov.paredes.norte) nextMaze = markWall(nextMaze, currentTarget, "north");
+      if (mov.paredes.sul) nextMaze = markWall(nextMaze, currentTarget, "south");
+      if (mov.paredes.leste) nextMaze = markWall(nextMaze, currentTarget, "east");
+      if (mov.paredes.oeste) nextMaze = markWall(nextMaze, currentTarget, "west");
+
+      stepRef.current += 1;
+      nextMaze = markVisited(nextMaze, currentTarget, stepRef.current);
+
+      const last = nextPath.length > 0 ? nextPath[nextPath.length - 1] : { row: 0, col: 0 };
+      if (!positionsEqual(last, currentTarget)) {
+        const dx = Math.abs(currentTarget.col - last.col);
+        const dy = Math.abs(currentTarget.row - last.row);
+
+        if (dx + dy === 1) {
+          if (!hasWallBetween(nextMaze, last, currentTarget)) {
+            nextPath.push(currentTarget);
+          } else {
+            console.warn("Movimento ignorado: parede bloqueando caminho", last, currentTarget);
+          }
+        } else {
+          const p1 = { row: last.row, col: currentTarget.col };
+          const p2 = { row: currentTarget.row, col: last.col };
+
+          const p1Valid = !hasWallBetween(nextMaze, last, p1) && !hasWallBetween(nextMaze, p1, currentTarget);
+          const p2Valid = !hasWallBetween(nextMaze, last, p2) && !hasWallBetween(nextMaze, p2, currentTarget);
+
+          if (p1Valid) {
+            nextPath.push(p1, currentTarget);
+          } else if (p2Valid) {
+            nextPath.push(p2, currentTarget);
+          } else {
+            console.warn("Movimento diagonal inválido: bloqueado por paredes", last, currentTarget);
+          }
+        }
+      }
+
+      nextPosition = currentTarget;
+      statusChanged = true;
     }
 
-    const nextPosition = {
-      row: ultimaMovimentacao.y,
-      col: ultimaMovimentacao.x,
-    };
-
-    if (!isInsideMaze(nextPosition, gridSize)) {
-      return;
+    if (statusChanged) {
+      setMaze(nextMaze);
+      setPath(nextPath);
+      setPosition(nextPosition);
+      positionRef.current = nextPosition;
+      setDirection(nextDirection);
+      setSessionStatus("running");
     }
 
-    const prevPosition = positionRef.current;
-    let nextDirection: Direction = directionRef.current;
-    if (nextPosition.row === prevPosition.row - 1) {
-      nextDirection = "north";
-    } else if (nextPosition.row === prevPosition.row + 1) {
-      nextDirection = "south";
-    } else if (nextPosition.col === prevPosition.col + 1) {
-      nextDirection = "east";
-    } else if (nextPosition.col === prevPosition.col - 1) {
-      nextDirection = "west";
-    }
-
-    setMaze((prev) => {
-      let nextMaze = prev;
-
-      if (ultimaMovimentacao.paredes.norte) {
-        nextMaze = markWall(nextMaze, nextPosition, "north");
-      }
-      if (ultimaMovimentacao.paredes.sul) {
-        nextMaze = markWall(nextMaze, nextPosition, "south");
-      }
-      if (ultimaMovimentacao.paredes.leste) {
-        nextMaze = markWall(nextMaze, nextPosition, "east");
-      }
-      if (ultimaMovimentacao.paredes.oeste) {
-        nextMaze = markWall(nextMaze, nextPosition, "west");
-      }
-
-      return nextMaze;
-    });
-
-    stepRef.current += 1;
-    setMaze((prev) => markVisited(prev, nextPosition, stepRef.current));
-    setPath((prev) => [...prev, nextPosition]);
-    setPosition(nextPosition);
-    positionRef.current = nextPosition;
-    setDirection(nextDirection);
-    setSessionStatus("running");
-  }, [ultimaMovimentacao, gridSize]);
+    limparFilaMovimentacoes();
+  }, [filaMovimentacoes, gridSize, limparFilaMovimentacoes]);
 
   useEffect(() => {
     if (

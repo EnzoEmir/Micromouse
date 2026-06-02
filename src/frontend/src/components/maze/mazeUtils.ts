@@ -106,3 +106,88 @@ export const markVisited = (
   cell.historyStep = step;
   return next;
 };
+
+export const hasWallBetween = (
+  maze: Cell[][],
+  p1: Position,
+  p2: Position,
+): boolean => {
+  const cell1 = maze[p1.row]?.[p1.col];
+  const cell2 = maze[p2.row]?.[p2.col];
+  if (!cell1 && !cell2) return false;
+
+  if (p2.col === p1.col + 1 && p2.row === p1.row) {
+    return cell1?.walls?.east || cell2?.walls?.west || false;
+  }
+  if (p2.col === p1.col - 1 && p2.row === p1.row) {
+    return cell1?.walls?.west || cell2?.walls?.east || false;
+  }
+  if (p2.row === p1.row + 1 && p2.col === p1.col) {
+    return cell1?.walls?.south || cell2?.walls?.north || false;
+  }
+  if (p2.row === p1.row - 1 && p2.col === p1.col) {
+    return cell1?.walls?.north || cell2?.walls?.south || false;
+  }
+
+  return true; // Not adjacent, consider it walled to prevent direct crossing
+};
+
+/**
+ * Normaliza um array de posições para que o trajeto siga apenas
+ * movimentos ortogonais (horizontal e vertical), sem linhas diagonais.
+ *
+ * Quando dois pontos consecutivos diferem tanto em row quanto em col,
+ * um ponto intermediário é inserido para criar um caminho em "L".
+ * Usa o labirinto (se fornecido) para escolher o caminho intermediário
+ * que não atravessa paredes.
+ */
+export const normalizePathToOrthogonal = (
+  points: Position[],
+  maze?: Cell[][],
+): Position[] => {
+  if (points.length <= 1) {
+    return [...points];
+  }
+
+  const normalized: Position[] = [];
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const current = points[i];
+    const next = points[i + 1];
+
+    normalized.push(current);
+
+    const movedInRow = current.row !== next.row;
+    const movedInCol = current.col !== next.col;
+
+    if (movedInRow && movedInCol) {
+      const p1 = { row: current.row, col: next.col }; // Move col first
+      const p2 = { row: next.row, col: current.col }; // Move row first
+
+      let useP1 = true;
+
+      if (maze) {
+        // Check which intermediate point avoids walls
+        const p1Valid =
+          !hasWallBetween(maze, current, p1) && !hasWallBetween(maze, p1, next);
+        const p2Valid =
+          !hasWallBetween(maze, current, p2) && !hasWallBetween(maze, p2, next);
+
+        if (!p1Valid && p2Valid) {
+          useP1 = false;
+        }
+      }
+
+      if (useP1) {
+        normalized.push(p1);
+      } else {
+        normalized.push(p2);
+      }
+    }
+  }
+
+  // Adicionar o último ponto.
+  normalized.push(points[points.length - 1]);
+
+  return normalized;
+};
