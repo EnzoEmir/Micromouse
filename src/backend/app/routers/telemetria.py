@@ -263,7 +263,7 @@ async def receber_pacote_telemetria(
 
     # Faz o broadcast para o Dashboard via WebSocket
     estado_dict = _estado_to_dict(novo_estado)
-
+    print("Estado dict", estado_dict)
     if tipo == TipoPacote.INICIAL:
         evento = {
             "type": "SESSAO_INICIADA",
@@ -290,7 +290,21 @@ async def receber_pacote_telemetria(
             "type": "ATUALIZACAO_TELEMETRIA",
             "data": estado_dict
         }
+    if tipo == TipoPacote.MOVIMENTACAO:
+        evento_movimentacao = {
+            "type": "MOVIMENTACAO",
+            "data": {
+                "id_corrida": novo_estado.id_corrida_banco,
+                "timestamp_ms": pacote.get("timestamp_ms"),
+                "x": pacote.get("x"),
+                "y": pacote.get("y"),
+                "w": pacote.get("w"),
+            },
+        }
+        await manager.send_json_to_all_clients(evento_movimentacao)
 
+    print(f"Broadcasting evento: {evento}")
+    print()
     await manager.send_json_to_all_clients(evento)
     if tipo in (TipoPacote.FINAL, TipoPacote.ALERTA_TEMPERATURA):
         del estados_ativos[sessao_id]

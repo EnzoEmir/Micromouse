@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import { createMockTelemetry } from "./mockTelemetry";
-import { createMaze, markVisited, markWall } from "./mazeUtils";
+import { useTelemetria } from "../../hooks/useTelemetria";
+import { createMaze, isInsideMaze, markVisited, markWall, normalizePathToOrthogonal, hasWallBetween, findGoalArea } from "./mazeUtils";
 import type { Cell, Direction, Position } from "./types";
 
 const DEFAULT_GRID_SIZE = 8;
 const GRID_SIZES = [16, 8, 4] as const;
-const MAX_STEPS = 512;
 
 const positionsEqual = (a: Position, b: Position) =>
   a.row === b.row && a.col === b.col;
 
 export default function MazeViewer() {
+  const { filaMovimentacoes, limparFilaMovimentacoes, configSessao, indicadores, statusConexao } =
+    useTelemetria();
   // Estado principal da corrida e do labirinto.
   const [gridSize, setGridSize] = useState(DEFAULT_GRID_SIZE);
   const [maze, setMaze] = useState(() => createMaze(DEFAULT_GRID_SIZE));
@@ -33,14 +34,12 @@ export default function MazeViewer() {
     "idle" | "running" | "finished"
   >("idle");
   const stepRef = useRef(0);
+  const sessionIdRef = useRef<number | null>(null);
   // Mantem posicao atual sem depender do fechamento do useEffect.
   const positionRef = useRef<Position>({ row: 0, col: 0 });
   const mazeRef = useRef<Cell[][]>(maze);
   const pathRef = useRef<Position[]>(path);
   const directionRef = useRef<Direction>(direction);
-  const telemetryRef = useRef<ReturnType<typeof createMockTelemetry> | null>(
-    null,
-  );
   const snapshot = viewMode === "history" ? history[historyIndex] : undefined;
   const displayMaze = snapshot ? snapshot.maze : maze;
   const displayPath = snapshot ? snapshot.path : path;
@@ -54,13 +53,17 @@ export default function MazeViewer() {
         : "min(60vmin, 360px)";
   const wallShadowColor = "rgb(9 9 11)";
   const origin = { row: 0, col: 0 };
-  const pathPoints = [origin, ...displayPath];
-  if (!positionsEqual(pathPoints[pathPoints.length - 1], displayPosition)) {
-    pathPoints.push(displayPosition);
+  const rawPathPoints = [origin, ...displayPath];
+  if (!positionsEqual(rawPathPoints[rawPathPoints.length - 1], displayPosition)) {
+    rawPathPoints.push(displayPosition);
   }
+  // Normaliza o trajeto para evitar linhas diagonais entre células.
+  const pathPoints = normalizePathToOrthogonal(rawPathPoints, displayMaze);
   const pathPointsString = pathPoints
     .map((point) => `${point.col + 0.5},${point.row + 0.5}`)
     .join(" ");
+
+  const goalAreaCells = findGoalArea(displayMaze);
 
   const cloneMaze = (source: Cell[][]) =>
     source.map((row) =>
@@ -68,8 +71,8 @@ export default function MazeViewer() {
     );
 
   const resetRunState = (size: number) => {
-    telemetryRef.current?.stop();
     stepRef.current = 0;
+    sessionIdRef.current = null;
     setSessionStatus("idle");
     setPosition({ row: 0, col: 0 });
     positionRef.current = { row: 0, col: 0 };
@@ -89,21 +92,14 @@ export default function MazeViewer() {
     setGridSize(size);
   };
 
-  // Inicia a telemetria mock (CA-12-01).
   const startSession = () => {
-    if (sessionStatus === "running") {
-      return;
-    }
     resetRunState(gridSize);
-    setSessionStatus("running");
   };
 
   const openHistory = () => {
     if (history.length === 0) {
       return;
     }
-
-    telemetryRef.current?.stop();
     setSessionStatus("finished");
     setViewMode("history");
     setHistoryIndex(0);
@@ -128,60 +124,136 @@ export default function MazeViewer() {
     directionRef.current = direction;
   }, [direction]);
 
-  // Ciclo principal da telemetria e atualizacao do grid.
   useEffect(() => {
-    if (sessionStatus !== "running") {
+    const dimensao = Number(configSessao.dimensao);
+    if (
+      !Number.isNaN(dimensao) &&
+      (dimensao === 4 || dimensao === 8 || dimensao === 16)
+    ) {
+      if (dimensao !== gridSize) {
+        resetRunState(dimensao);
+        setGridSize(dimensao);
+      }
+    }
+  }, [configSessao.dimensao, gridSize]);
+
+  useEffect(() => {
+    if (filaMovimentacoes.length === 0) {
       return;
     }
 
-    const telemetry = createMockTelemetry({
-      size: gridSize,
-      intervalMs: 450,
-      maxSteps: MAX_STEPS,
-      onTelemetry: (update) => {
-        if (update.hitWall && update.wallDir) {
-          setMaze((prev) =>
-            markWall(prev, positionRef.current, update.wallDir!),
-          );
-          setDirection(update.direction);
-          return;
+    let nextMaze = mazeRef.current;
+    let nextPath = [...pathRef.current];
+    let nextPosition = positionRef.current;
+    let nextDirection = directionRef.current;
+    let statusChanged = false;
+
+    for (const mov of filaMovimentacoes) {
+      if (sessionIdRef.current !== mov.id_corrida) {
+        sessionIdRef.current = mov.id_corrida;
+        // Reinicia variaveis locais (equivalente ao resetRunState, para não agendar varios renders)
+        stepRef.current = 0;
+        setSessionStatus("idle");
+        nextMaze = createMaze(gridSize);
+        nextPath = [];
+        nextPosition = { row: 0, col: 0 };
+        nextDirection = "east";
+        setViewMode("live");
+        setIsHistoryOpen(false);
+      }
+
+      const currentTarget = {
+        row: mov.y,
+        col: mov.x,
+      };
+
+      if (!isInsideMaze(currentTarget, gridSize)) {
+        continue;
+      }
+
+      if (currentTarget.row === nextPosition.row - 1) {
+        nextDirection = "north";
+      } else if (currentTarget.row === nextPosition.row + 1) {
+        nextDirection = "south";
+      } else if (currentTarget.col === nextPosition.col + 1) {
+        nextDirection = "east";
+      } else if (currentTarget.col === nextPosition.col - 1) {
+        nextDirection = "west";
+      }
+
+      if (mov.paredes.norte) nextMaze = markWall(nextMaze, currentTarget, "north");
+      if (mov.paredes.sul) nextMaze = markWall(nextMaze, currentTarget, "south");
+      if (mov.paredes.leste) nextMaze = markWall(nextMaze, currentTarget, "east");
+      if (mov.paredes.oeste) nextMaze = markWall(nextMaze, currentTarget, "west");
+
+      stepRef.current += 1;
+      nextMaze = markVisited(nextMaze, currentTarget, stepRef.current);
+
+      const last = nextPath.length > 0 ? nextPath[nextPath.length - 1] : { row: 0, col: 0 };
+      if (!positionsEqual(last, currentTarget)) {
+        const dx = Math.abs(currentTarget.col - last.col);
+        const dy = Math.abs(currentTarget.row - last.row);
+
+        if (dx + dy === 1) {
+          if (!hasWallBetween(nextMaze, last, currentTarget)) {
+            nextPath.push(currentTarget);
+          } else {
+            console.warn("Movimento ignorado: parede bloqueando caminho", last, currentTarget);
+          }
+        } else {
+          const p1 = { row: last.row, col: currentTarget.col };
+          const p2 = { row: currentTarget.row, col: last.col };
+
+          const p1Valid = !hasWallBetween(nextMaze, last, p1) && !hasWallBetween(nextMaze, p1, currentTarget);
+          const p2Valid = !hasWallBetween(nextMaze, last, p2) && !hasWallBetween(nextMaze, p2, currentTarget);
+
+          if (p1Valid) {
+            nextPath.push(p1, currentTarget);
+          } else if (p2Valid) {
+            nextPath.push(p2, currentTarget);
+          } else {
+            console.warn("Movimento diagonal inválido: bloqueado por paredes", last, currentTarget);
+          }
         }
+      }
 
-        if (update.moved) {
-          stepRef.current += 1;
-          setMaze((prev) =>
-            markVisited(prev, update.position, stepRef.current),
-          );
-          setPath((prev) => [...prev, update.position]);
-          setPosition(update.position);
-          positionRef.current = update.position;
-          setDirection(update.direction);
-        }
+      nextPosition = currentTarget;
+      statusChanged = true;
+    }
+
+    if (statusChanged) {
+      setMaze(nextMaze);
+      setPath(nextPath);
+      setPosition(nextPosition);
+      positionRef.current = nextPosition;
+      setDirection(nextDirection);
+      setSessionStatus("running");
+    }
+
+    limparFilaMovimentacoes();
+  }, [filaMovimentacoes, gridSize, limparFilaMovimentacoes]);
+
+  useEffect(() => {
+    if (
+      indicadores.status_corrida !== "concluida" &&
+      indicadores.status_corrida !== "falha"
+    ) {
+      return;
+    }
+
+    setHistory((prev) => [
+      {
+        maze: cloneMaze(mazeRef.current),
+        path: [...pathRef.current],
+        endPosition: positionRef.current,
+        endDirection: directionRef.current,
+        gridSize,
       },
-      onFinish: () => {
-        setHistory((prev) => [
-          {
-            maze: cloneMaze(mazeRef.current),
-            path: [...pathRef.current],
-            endPosition: positionRef.current,
-            endDirection: directionRef.current,
-            gridSize,
-          },
-          ...prev,
-        ]);
-        setHistoryIndex(0);
-        setSessionStatus("finished");
-        telemetry.stop();
-      },
-    });
-
-    telemetryRef.current = telemetry;
-    telemetry.start();
-
-    return () => {
-      telemetry.stop();
-    };
-  }, [sessionStatus, gridSize]);
+      ...prev,
+    ]);
+    setHistoryIndex(0);
+    setSessionStatus("finished");
+  }, [indicadores.status_corrida, gridSize]);
 
   return (
     <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
@@ -193,10 +265,6 @@ export default function MazeViewer() {
           <h2 className="text-xl font-semibold text-zinc-950">
             Mapa de navegacao em tempo real
           </h2>
-          <p className="mt-1 text-sm text-zinc-500">
-            Sinal vivo da corrida com rastreio de paredes, celulas visitadas e
-            historico de rotas.
-          </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
@@ -204,7 +272,7 @@ export default function MazeViewer() {
             className="rounded-lg bg-zinc-950 px-3 py-2 text-xs font-semibold text-white transition hover:bg-zinc-800"
             onClick={startSession}
           >
-            Simular corrida
+            Limpar mapa
           </button>
           <button
             type="button"
@@ -247,13 +315,19 @@ export default function MazeViewer() {
                   const isOnPath = displayPath.some((step) =>
                     positionsEqual(step, cellPosition),
                   );
+                  const isGoal = goalAreaCells.some((goalCell) => 
+                    positionsEqual(goalCell, cellPosition)
+                  );
+                  
                   const backgroundColor = isCurrent
                     ? "rgb(125 211 252)"
-                    : cell.visited
-                      ? "rgb(186 230 253)"
-                      : isOnPath
-                        ? "rgb(224 242 254)"
-                        : "rgb(255 255 255)";
+                    : isGoal
+                      ? "rgb(250 204 21)" // amarelo forte para destacar bem o objetivo
+                      : cell.visited
+                        ? "rgb(186 230 253)"
+                        : isOnPath
+                          ? "rgb(224 242 254)"
+                          : "rgb(255 255 255)";
                   const wallShadows = [
                     cell.walls.north
                       ? `inset 0 2px 0 0 ${wallShadowColor}`
@@ -302,12 +376,17 @@ export default function MazeViewer() {
                   strokeLinejoin="round"
                 />
               </svg>
-              <div
-                className="pointer-events-none absolute z-30 h-3 w-3 rounded-full bg-black"
+              <img
+                src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/25.png"
+                alt="Pikachu Micromouse"
+                className="pointer-events-none absolute z-30 object-contain"
                 style={{
+                  width: `${120 / displayGridSize}%`,
+                  height: `${120 / displayGridSize}%`,
                   left: `${((displayPosition.col + 0.5) / displayGridSize) * 100}%`,
                   top: `${((displayPosition.row + 0.5) / displayGridSize) * 100}%`,
                   transform: "translate(-50%, -50%)",
+                  filter: "drop-shadow(0px 2px 3px rgba(0,0,0,0.4))"
                 }}
               />
             </div>
@@ -324,6 +403,12 @@ export default function MazeViewer() {
                 <span>Sessao</span>
                 <span className="font-semibold text-zinc-900">
                   {sessionStatus}
+                </span>
+              </p>
+              <p className="flex items-center justify-between">
+                <span>Conexao</span>
+                <span className="font-semibold text-zinc-900">
+                  {statusConexao}
                 </span>
               </p>
               <p className="flex items-center justify-between">
