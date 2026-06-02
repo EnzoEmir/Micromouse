@@ -376,12 +376,17 @@ export default function MazeViewer() {
                   strokeLinejoin="round"
                 />
               </svg>
-              <div
-                className="pointer-events-none absolute z-30 h-3 w-3 rounded-full bg-black"
+              <img
+                src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/25.png"
+                alt="Pikachu Micromouse"
+                className="pointer-events-none absolute z-30 object-contain"
                 style={{
+                  width: `${120 / displayGridSize}%`,
+                  height: `${120 / displayGridSize}%`,
                   left: `${((displayPosition.col + 0.5) / displayGridSize) * 100}%`,
                   top: `${((displayPosition.row + 0.5) / displayGridSize) * 100}%`,
                   transform: "translate(-50%, -50%)",
+                  filter: "drop-shadow(0px 2px 3px rgba(0,0,0,0.4))"
                 }}
               />
             </div>
