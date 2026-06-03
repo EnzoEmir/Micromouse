@@ -212,7 +212,7 @@ export const CardMelhorTempo: React.FC<CardMelhorTempoProps> = ({
           </p>
         </div>
         <span className="self-start rounded-full bg-green-100 px-3 py-1 text-xs font-medium text-green-700">
-          🏆 Recorde registrado
+          Recorde registrado
         </span>
       </header>
       <main className="grid grid-cols-1 gap-4 md:grid-cols-3">

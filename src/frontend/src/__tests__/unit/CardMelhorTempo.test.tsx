@@ -140,7 +140,7 @@ describe("CT-CMT-03 — Estado com recorde: exibe dados da corrida (CA-17-01, CA
     expect(screen.getByText(/01\/05\/2026/)).toBeInTheDocument();
   });
 
-  it("exibe o badge '🏆 Recorde registrado'", () => {
+  it("exibe o badge 'Recorde registrado'", () => {
     render(<CardMelhorTempo tipo="4X4" />);
     expect(screen.getByText(/Recorde registrado/i)).toBeInTheDocument();
   });
