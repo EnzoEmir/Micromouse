@@ -82,9 +82,25 @@ export interface UseTelemetriaReturn {
   filaMovimentacoes: MovimentacaoTelemetria[];
   /** Limpa a fila apos processar */
   limparFilaMovimentacoes: () => void;
+  /**
+   * Contador incrementado a cada SESSAO_ENCERRADA com sucesso=true.
+   * Componentes podem usar como dependência para disparar refetch.
+   * (CA-17-02)
+   */
+  contadorNovoRecorde: number;
 }
 
-export function useTelemetria(): UseTelemetriaReturn {
+type UseTelemetriaOptions = {
+  /**
+   * Callback chamado quando SESSAO_ENCERRADA chega com sucesso=true.
+   * Use para disparar refetch do melhor tempo e exibir toast de novo recorde.
+   */
+  onSessaoEncerradaComSucesso?: () => void;
+};
+
+export function useTelemetria(
+  options?: UseTelemetriaOptions,
+): UseTelemetriaReturn {
   const [indicadores, setIndicadores] = useState<IndicadoresDesempenho>(() => {
     const indicadoresSalvos = localStorage.getItem("indicadores");
     return indicadoresSalvos ? JSON.parse(indicadoresSalvos) : ESTADO_INICIAL;
@@ -109,6 +125,13 @@ export function useTelemetria(): UseTelemetriaReturn {
   const [filaMovimentacoes, setFilaMovimentacoes] = useState<
     MovimentacaoTelemetria[]
   >([]);
+  const [contadorNovoRecorde, setContadorNovoRecorde] = useState(0);
+
+  // Ref para manter o callback sempre atualizado sem recriar o WebSocket
+  const onSessaoEncerradaRef = useRef(options?.onSessaoEncerradaComSucesso);
+  useEffect(() => {
+    onSessaoEncerradaRef.current = options?.onSessaoEncerradaComSucesso;
+  }, [options?.onSessaoEncerradaComSucesso]);
 
   const limparFilaMovimentacoes = useCallback(() => {
     setFilaMovimentacoes([]);
@@ -117,14 +140,12 @@ export function useTelemetria(): UseTelemetriaReturn {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Decodifica o inteiro de paredes (w) em um binário para identificar as paredes presentes na célula.
   const decodificarParedes = useCallback((w: number): ParedesCelula => {
-    // o "&" é o operador bit-a-bit AND. Ele “pega” apenas o bit indicado.
     return {
-      norte: (w & 1) === 1, //Se (w & 1) === 1, o bit 0 esta ligado → parede ao norte.
-      sul: (w & 2) === 2, //Se (w & 2) === 2, o bit 1 esta ligado → parede ao sul.
-      leste: (w & 4) === 4, //Se (w & 4) === 4, o bit 2 esta ligado → parede ao leste.
-      oeste: (w & 8) === 8, //Se (w & 8) === 8, o bit 3 esta ligado → parede ao oeste.
+      norte: (w & 1) === 1,
+      sul: (w & 2) === 2,
+      leste: (w & 4) === 4,
+      oeste: (w & 8) === 8,
     };
   }, []);
 
@@ -155,14 +176,12 @@ export function useTelemetria(): UseTelemetriaReturn {
     [],
   );
 
-  //Persistir estado no localStorage para manter dados entre recarregamentos
   useEffect(() => {
     localStorage.setItem("indicadores", JSON.stringify(indicadores));
     localStorage.setItem("configSessao", JSON.stringify(configSessao));
   }, [indicadores, configSessao]);
 
   const realizarConexao = useCallback(function conectar() {
-    // Evitar conexões duplicadas
     if (
       wsRef.current &&
       (wsRef.current.readyState === WebSocket.OPEN ||
@@ -183,10 +202,10 @@ export function useTelemetria(): UseTelemetriaReturn {
         const parsed = JSON.parse(event.data);
         const payload = parsed?.data ?? parsed;
         console.log("[useTelemetria] Mensagem recebida INICIAL:", parsed);
-        // Tratar erros enviados pelo backend
+
         if (parsed.type === "ERROR") {
           toast.error(parsed.message || "Erro na telemetria", {
-            id: "telemetria-error", // Evita toasts duplicados
+            id: "telemetria-error",
           });
           return;
         }
@@ -204,6 +223,13 @@ export function useTelemetria(): UseTelemetriaReturn {
             "[useTelemetria] Sessão anterior encerrada:",
             parsed.data,
           );
+
+          // CA-17-02: se a sessão foi encerrada com sucesso, pode haver novo recorde
+          if (parsed.data?.sucesso === true) {
+            setContadorNovoRecorde((c) => c + 1);
+            onSessaoEncerradaRef.current?.();
+          }
+
           setIndicadores(ESTADO_INICIAL);
           setConfigSessao(CONFIG_SESSAO_INICIAL);
           setStatusConexao("waiting");
@@ -216,7 +242,6 @@ export function useTelemetria(): UseTelemetriaReturn {
           parsed?.type === "MOVIMENTACAO_PAREDES" ||
           isMovimentacaoPayload(payload)
         ) {
-          // console.log("[useTelemetria] Movimentação recebida:", payload);
           if (isMovimentacaoPayload(payload)) {
             const mov = {
               ...payload,
@@ -248,10 +273,13 @@ export function useTelemetria(): UseTelemetriaReturn {
           setIndicadores(indicadoresData as IndicadoresDesempenho);
           setStatusConexao("online");
           setMensagemStatusConexao(null);
-          toast.error(`Alerta Crítico: Temperatura em ${temp_c}ºC! Corrida abortada.`, {
-            id: "alerta-temperatura",
-            duration: 5000,
-          });
+          toast.error(
+            `Alerta Crítico: Temperatura em ${temp_c}ºC! Corrida abortada.`,
+            {
+              id: "alerta-temperatura",
+              duration: 5000,
+            },
+          );
         }
       } catch (e) {
         console.error("[useTelemetria] Erro ao processar mensagem:", e);
@@ -265,8 +293,6 @@ export function useTelemetria(): UseTelemetriaReturn {
     ws.onclose = () => {
       setConectado(false);
       wsRef.current = null;
-
-      // Reconexão automática
       reconnectTimerRef.current = setTimeout(conectar, RECONNECT_INTERVAL_MS);
     };
 
@@ -277,7 +303,6 @@ export function useTelemetria(): UseTelemetriaReturn {
     realizarConexao();
 
     return () => {
-      // Cleanup ao desmontar
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
       }
@@ -308,5 +333,6 @@ export function useTelemetria(): UseTelemetriaReturn {
     ultimaMovimentacao,
     filaMovimentacoes,
     limparFilaMovimentacoes,
+    contadorNovoRecorde,
   };
 }

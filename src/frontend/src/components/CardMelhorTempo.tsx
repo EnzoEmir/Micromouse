@@ -1,46 +1,40 @@
 /**
  * Componente de destaque visual para o melhor tempo registrado em um labirinto.
  *
- * Reutiliza o padrão de `CardIndicador` de `DashboardIndicadores.tsx`.
- * Chama `useMelhorTempo` internamente — basta passar o `tipo` como prop.
+ * Pode receber os dados via props (modo controlado — usado pela SessionsPage
+ * para coordenar refetch reativo) ou chamar useMelhorTempo internamente
+ * (modo autônomo — uso standalone simples).
  *
- * Uso:
+ * Uso autônomo:
  * ```tsx
- * <CardMelhorTempo tipo="classico" />
+ * <CardMelhorTempo tipo="4X4" />
+ * ```
+ *
+ * Uso controlado (SessionsPage):
+ * ```tsx
+ * <CardMelhorTempo tipo="4X4" melhorTempo={melhorTempo} loading={loading} erro={erro} />
  * ```
  */
 
 import React from "react";
 
-import type { TipoLabirinto } from "../types/corrida";
+import type { MelhorTempoResponse, TipoLabirinto } from "../types/corrida";
 import { useMelhorTempo } from "../hooks/useMelhorTempo";
 
 // ---------------------------------------------------------------------------
-// Helpers (espelham os de DashboardIndicadores)
+// Helpers
 // ---------------------------------------------------------------------------
 
 const formatarTempo = (ms?: number | null): string => {
   if (ms === null || ms === undefined || Number.isNaN(ms) || ms < 0) {
     return "00:00.000";
   }
-
   const minutos = Math.floor(ms / 60000);
   const segundos = Math.floor((ms % 60000) / 1000);
   const milissegundos = Math.floor(ms % 1000);
-
-  return `${String(minutos).padStart(2, "0")}:${String(segundos).padStart(
-    2,
-    "0",
-  )}.${String(milissegundos).padStart(3, "0")}`;
+  return `${String(minutos).padStart(2, "0")}:${String(segundos).padStart(2, "0")}.${String(milissegundos).padStart(3, "0")}`;
 };
 
-/**
- * Formata um id_corrida numérico como "#2026-05-01-011".
- *
- * A lógica usa o id como sufixo zero-padded de 3 dígitos combinado com a
- * data atual; em produção, o backend pode enviar o id já formatado — ajuste
- * conforme necessário.
- */
 const formatarIdCorrida = (id: number): string => {
   const hoje = new Date();
   const ano = hoje.getFullYear();
@@ -51,7 +45,6 @@ const formatarIdCorrida = (id: number): string => {
 
 const formatarData = (dataIso: string | null): string => {
   if (!dataIso) return "--";
-
   try {
     return new Intl.DateTimeFormat("pt-BR", {
       day: "2-digit",
@@ -66,8 +59,7 @@ const formatarData = (dataIso: string | null): string => {
 };
 
 // ---------------------------------------------------------------------------
-// CardIndicador — cópia local para não criar dependência circular
-// (igual ao de DashboardIndicadores.tsx)
+// CardIndicador
 // ---------------------------------------------------------------------------
 
 type CardIndicadorProps = {
@@ -110,10 +102,34 @@ const CardIndicador: React.FC<CardIndicadorProps> = ({
 export type CardMelhorTempoProps = {
   /** Tipo do labirinto para buscar o melhor tempo. */
   tipo: TipoLabirinto;
+  /**
+   * Dados do melhor tempo (modo controlado).
+   * Se não fornecido, o componente chama useMelhorTempo internamente.
+   */
+  melhorTempo?: MelhorTempoResponse | null;
+  /** Estado de loading (modo controlado). */
+  loading?: boolean;
+  /** Mensagem de erro (modo controlado). */
+  erro?: string | null;
 };
 
-export const CardMelhorTempo: React.FC<CardMelhorTempoProps> = ({ tipo }) => {
-  const { melhorTempo, loading, erro } = useMelhorTempo(tipo);
+export const CardMelhorTempo: React.FC<CardMelhorTempoProps> = ({
+  tipo,
+  melhorTempo: melhorTempoProp,
+  loading: loadingProp,
+  erro: erroProp,
+}) => {
+  // Modo autônomo: chama o hook internamente quando não recebe props externas
+  const autonomo = useMelhorTempo(
+    // Só busca se estiver em modo autônomo (props não fornecidas)
+    melhorTempoProp === undefined && loadingProp === undefined ? tipo : "__skip__",
+  );
+
+  const melhorTempo =
+    melhorTempoProp !== undefined ? melhorTempoProp : autonomo.melhorTempo;
+  const loading =
+    loadingProp !== undefined ? loadingProp : autonomo.loading;
+  const erro = erroProp !== undefined ? erroProp : autonomo.erro;
 
   // ── Estado: carregando
   if (loading) {
@@ -130,16 +146,10 @@ export const CardMelhorTempo: React.FC<CardMelhorTempoProps> = ({ tipo }) => {
             Menor tempo com desafio cumprido para este labirinto.
           </p>
         </header>
-
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           {(["Sessão", "Tempo Total", "Conquistado em"] as const).map(
             (titulo) => (
-              <CardIndicador
-                key={titulo}
-                titulo={titulo}
-                valor="--"
-                estado="vazio"
-              />
+              <CardIndicador key={titulo} titulo={titulo} valor="--" estado="vazio" />
             ),
           )}
         </div>
@@ -158,7 +168,7 @@ export const CardMelhorTempo: React.FC<CardMelhorTempoProps> = ({ tipo }) => {
     );
   }
 
-  // ── Estado: vazio (nenhuma corrida concluída com sucesso)
+  // ── Estado: vazio
   if (!melhorTempo) {
     return (
       <div className="w-full rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm">
@@ -173,7 +183,6 @@ export const CardMelhorTempo: React.FC<CardMelhorTempoProps> = ({ tipo }) => {
             Menor tempo com desafio cumprido para este labirinto.
           </p>
         </header>
-
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <CardIndicador
             titulo="Sessão"
@@ -181,11 +190,7 @@ export const CardMelhorTempo: React.FC<CardMelhorTempoProps> = ({ tipo }) => {
             estado="vazio"
           />
           <CardIndicador titulo="Tempo Total" valor="--" estado="vazio" />
-          <CardIndicador
-            titulo="Conquistado em"
-            valor="--"
-            estado="vazio"
-          />
+          <CardIndicador titulo="Conquistado em" valor="--" estado="vazio" />
         </div>
       </div>
     );
@@ -206,12 +211,10 @@ export const CardMelhorTempo: React.FC<CardMelhorTempoProps> = ({ tipo }) => {
             Menor tempo com desafio cumprido para este labirinto.
           </p>
         </div>
-
         <span className="self-start rounded-full bg-green-100 px-3 py-1 text-xs font-medium text-green-700">
           🏆 Recorde registrado
         </span>
       </header>
-
       <main className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <CardIndicador
           titulo="Sessão"
@@ -219,14 +222,12 @@ export const CardMelhorTempo: React.FC<CardMelhorTempoProps> = ({ tipo }) => {
           descricao="ID da corrida recordista"
           estado="sucesso"
         />
-
         <CardIndicador
           titulo="Tempo Total"
           valor={formatarTempo(melhorTempo.tempo_total)}
           descricao="Menor tempo com desafio cumprido"
           estado="sucesso"
         />
-
         <CardIndicador
           titulo="Conquistado em"
           valor={formatarData(melhorTempo.data_hora_fim)}

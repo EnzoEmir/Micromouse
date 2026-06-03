@@ -5,10 +5,13 @@
  * corridas registradas, com filtro por tipo de labirinto.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import toast from "react-hot-toast";
 
 import { CardMelhorTempo } from "../components/CardMelhorTempo";
 import { MonitoringLayout } from "../components/MonitoringLayout";
+import { useMelhorTempo } from "../hooks/useMelhorTempo";
+import { useTelemetria } from "../hooks/useTelemetria";
 import { listarCorridasResumo } from "../services/corrida";
 import type {
   CorridaResumoResponse,
@@ -120,7 +123,44 @@ export function SessionsPage({
   const [erro, setErro] = useState<string | null>(null);
   const [tipoSelecionado, setTipoSelecionado] =
     useState<TipoLabirintoFiltro>("TODOS");
+  const [contadorTabela, setContadorTabela] = useState(0);
 
+  // Tipo para o CardMelhorTempo
+  const tipoParaRecorde: TipoLabirinto =
+    tipoSelecionado === "TODOS" ? "4X4" : tipoSelecionado;
+
+  // Hook do melhor tempo — controlamos o refetch manualmente (CA-17-02)
+  const { melhorTempo, loading: loadingRecorde, erro: erroRecorde, refetch } =
+    useMelhorTempo(tipoParaRecorde);
+
+  // Ref para comparar tempo anterior e exibir toast de novo recorde
+  const melhorTempoAnteriorRef = useRef<number | null>(null);
+
+  // CA-17-02: ao receber SESSAO_ENCERRADA com sucesso=true, refetch + toast
+  const handleSessaoEncerradaComSucesso = useCallback(() => {
+    refetch();
+    setContadorTabela((c) => c + 1);
+  }, [refetch]);
+
+  const telemetria = useTelemetria({
+    onSessaoEncerradaComSucesso: handleSessaoEncerradaComSucesso,
+  });
+
+  // Exibe toast de novo recorde quando o melhorTempo mudar para um valor menor
+  useEffect(() => {
+    if (melhorTempo === null) return;
+
+    const anterior = melhorTempoAnteriorRef.current;
+    const atual = melhorTempo.tempo_total;
+
+    if (anterior !== null && atual < anterior) {
+      toast.success("🏆 Novo recorde!", { id: "novo-recorde", duration: 4000 });
+    }
+
+    melhorTempoAnteriorRef.current = atual;
+  }, [melhorTempo]);
+
+  // Busca a tabela de corridas
   useEffect(() => {
     let cancelado = false;
 
@@ -146,12 +186,7 @@ export function SessionsPage({
     return () => {
       cancelado = true;
     };
-  }, [tipoSelecionado]);
-
-  // Tipo para o CardMelhorTempo — usa o primeiro tipo concreto selecionado,
-  // ou "4X4" como padrão quando filtro é "TODOS"
-  const tipoParaRecorde: TipoLabirinto =
-    tipoSelecionado === "TODOS" ? "4X4" : tipoSelecionado;
+  }, [tipoSelecionado, contadorTabela]);
 
   return (
     <MonitoringLayout
@@ -162,12 +197,17 @@ export function SessionsPage({
       eyebrow="Corridas"
       title="Histórico de Sessões"
       description="Consulte todas as corridas registradas e veja o melhor resultado por tipo de labirinto."
-      statusConexao="waiting"
-      mensagemStatusConexao={null}
+      statusConexao={telemetria.statusConexao}
+      mensagemStatusConexao={telemetria.mensagemStatusConexao}
     >
       {/* Destaque: melhor tempo (CA-17-01) */}
       <div className="mb-8">
-        <CardMelhorTempo tipo={tipoParaRecorde} />
+        <CardMelhorTempo
+          tipo={tipoParaRecorde}
+          melhorTempo={melhorTempo}
+          loading={loadingRecorde}
+          erro={erroRecorde}
+        />
       </div>
 
       {/* Filtro por tipo */}
@@ -236,7 +276,6 @@ export function SessionsPage({
             </thead>
             <tbody>
               {loading ? (
-                // Skeleton rows
                 Array.from({ length: 5 }).map((_, i) => (
                   <tr key={i} className="border-b border-neutral-100">
                     {Array.from({ length: 6 }).map((_, j) => (
