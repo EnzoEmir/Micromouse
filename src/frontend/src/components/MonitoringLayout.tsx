@@ -1,7 +1,8 @@
 type MonitoringLayoutProps = {
-  activeView: "telemetria" | "labirinto";
+  activeView: "telemetria" | "labirinto" | "corridas";
   onNavigateTelemetria: () => void;
   onNavigateLabirinto: () => void;
+  onNavigateCorridas: () => void;
   eyebrow: string;
   title: string;
   description: string;
@@ -14,6 +15,7 @@ export function MonitoringLayout({
   activeView,
   onNavigateTelemetria,
   onNavigateLabirinto,
+  onNavigateCorridas,
   eyebrow,
   title,
   description,
@@ -21,7 +23,9 @@ export function MonitoringLayout({
   mensagemStatusConexao,
   children,
 }: MonitoringLayoutProps) {
+  const exibindoTelemetria = activeView === "telemetria";
   const exibindoLabirinto = activeView === "labirinto";
+  const exibindoCorridas = activeView === "corridas";
   const statusLabel =
     statusConexao === "online"
       ? "Online"
@@ -79,13 +83,26 @@ export function MonitoringLayout({
               type="button"
               onClick={onNavigateTelemetria}
               className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition ${
-                exibindoLabirinto
-                  ? "text-zinc-600 hover:bg-zinc-100"
-                  : "bg-zinc-950 font-medium text-white"
+                exibindoTelemetria
+                  ? "bg-zinc-950 text-white"
+                  : "text-zinc-600 hover:bg-zinc-100"
               }`}
             >
               <span>⌁</span>
               Telemetria
+            </button>
+
+            <button
+              type="button"
+              onClick={onNavigateCorridas}
+              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition ${
+                exibindoCorridas
+                  ? "bg-zinc-950 text-white"
+                  : "text-zinc-600 hover:bg-zinc-100"
+              }`}
+            >
+              <span>↺</span>
+              Corridas
             </button>
 
             <button className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-zinc-600 transition hover:bg-zinc-100">
