@@ -154,7 +154,7 @@ export function SessionsPage({
     const atual = melhorTempo.tempo_total;
 
     if (anterior !== null && atual < anterior) {
-      toast.success("🏆 Novo recorde!", { id: "novo-recorde", duration: 4000 });
+      toast.success("Novo recorde!", { id: "novo-recorde", duration: 4000 });
     }
 
     melhorTempoAnteriorRef.current = atual;
