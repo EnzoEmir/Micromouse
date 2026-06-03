@@ -1,7 +1,7 @@
 """Router de Corridas — registro e consulta."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlmodel import Session, select
+from sqlmodel import Session, select,  func
 
 from ..database import get_session
 from ..models.corrida import Corrida
@@ -125,6 +125,38 @@ def listar_corridas(
 
     results = session.exec(statement).all()
     return [_to_response_resumed(corrida, tipo_lab) for corrida, tipo_lab in results]
+
+@router.get(
+    "/melhor-tempo",
+    response_model=CorridaResponse,
+    summary="Melhor tempo por tipo de labirinto",
+)
+def melhor_tempo(
+    tipo: TipoLabirinto = Query(
+        description="Tipo de labirinto (4X4, 8X8, 16X16).",
+    ),
+    session: Session = Depends(get_session),
+) -> CorridaResponse:
+    """Retorna a corrida com menor tempo_total onde desafio_cumprido=True
+    para o tipo de labirinto informado.
+    """
+    statement = (
+        select(Corrida, Labirinto.tipo_labirinto)
+        .join(Labirinto, Corrida.id_labirinto == Labirinto.id_labirinto)
+        .where(Labirinto.tipo_labirinto == tipo)
+        .where(Corrida.desafio_cumprido == True)
+        .where(Corrida.tempo_total.isnot(None))
+        .order_by(Corrida.tempo_total.asc())
+        .limit(1)
+    )
+
+    result = session.exec(statement).first()
+
+    if result is None:
+        raise HTTPException(status_code=404, detail="Nenhum desafio concluído ainda.")
+
+    corrida, tipo_lab = result
+    return _to_response(corrida, tipo_lab)
 
 
 @router.get(
