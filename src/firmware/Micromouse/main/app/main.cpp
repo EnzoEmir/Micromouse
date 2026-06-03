@@ -9,6 +9,7 @@
 #include "driver/pulse_cnt.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -614,6 +615,13 @@ bool initMotores() {
 extern "C" void app_main(void) {
     vTaskDelay(pdMS_TO_TICKS(200));
     ESP_LOGI(TAG, "=== Micromouse :: main de navegacao ===");
+
+    esp_err_t nvs = nvs_flash_init();
+    if (nvs == ESP_ERR_NVS_NO_FREE_PAGES || nvs == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(nvs);
 
     g_i2c_mutex = xSemaphoreCreateMutex();
     if (g_i2c_mutex == nullptr) {

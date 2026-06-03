@@ -16,7 +16,7 @@ static constexpr uint8_t I2C_ADDR_MPU9250_PRIMARY = 0x68; // AD0 em GND (padrao)
 static constexpr uint8_t I2C_ADDR_MPU9250_ALT     = 0x69; // AD0 em VCC
 
 static constexpr uint8_t I2C_ADDR_INA226_DEFAULT  = 0x40; // A0/A1 = GND (datasheet)
-static constexpr uint8_t I2C_ADDR_INA226_MAX      = 0x4F; // Faixa valida 0x40-0x4F (datasheet)
+static constexpr uint8_t I2C_ADDR_INA226_BOARD    = 0x44; // Strap real da PCB
 
 static constexpr uint8_t I2C_ADDR_VL53L0X_DEFAULT = 0x29; // Datasheet: 0x52 (8-bit) -> 0x29 (7-bit)
 static constexpr uint8_t I2C_ADDR_VL53L0X_ALT_0   = 0x2A;

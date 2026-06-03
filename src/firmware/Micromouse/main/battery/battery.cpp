@@ -18,12 +18,12 @@
 
 
 static bool i2c_write_cb(uint8_t /*dev_addr*/, const uint8_t *data, size_t len) {
-    return i2c_manager_write(I2C_ADDR_INA226_DEFAULT, data, len, I2C_TIMEOUT_MS);
+    return i2c_manager_write(I2C_ADDR_INA226_BOARD, data, len, I2C_TIMEOUT_MS);
 }
 
 static bool i2c_read_register_cb(uint8_t /*dev_addr*/, uint8_t reg_addr,
                                   uint8_t *data, size_t len) {
-    return i2c_manager_read_register(I2C_ADDR_INA226_DEFAULT, reg_addr,
+    return i2c_manager_read_register(I2C_ADDR_INA226_BOARD, reg_addr,
                                      data, len, I2C_TIMEOUT_MS);
 }
 
@@ -44,14 +44,14 @@ bool Battery::init() {
         return false;
     }
 
-    if (!i2c_manager_register_device(I2C_ADDR_INA226_DEFAULT)) {
+    if (!i2c_manager_register_device(I2C_ADDR_INA226_BOARD)) {
         ESP_LOGE("Battery", "Failed to register INA226 on I2C bus");
         return false;
     }
 
     // Configura o INA226 com callbacks de I2C e parametros do shunt.
     espp::Ina226::Config config{};
-    config.device_address        = I2C_ADDR_INA226_DEFAULT;
+    config.device_address        = I2C_ADDR_INA226_BOARD;
     config.write                 = i2c_write_cb;
     config.read_register         = i2c_read_register_cb;
     config.current_lsb           = 0.0001f;
