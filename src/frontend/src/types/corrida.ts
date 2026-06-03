@@ -74,3 +74,11 @@ export interface CorridaResumoResponse {
 export interface CorridaDetailResponse extends CorridaResponse {
   percurso: PercursoResponse[];
 }
+
+/** Resposta do endpoint GET /api/corridas/melhor-tempo?tipo=<tipo> */
+export interface MelhorTempoResponse {
+  id_corrida: number;
+  tempo_total: number;
+  data_hora_fim: string | null;
+  tipo_labirinto: string | null;
+}

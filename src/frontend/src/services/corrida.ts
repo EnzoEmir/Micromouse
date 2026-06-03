@@ -41,3 +41,23 @@ export async function obterCorrida(
 ): Promise<CorridaDetailResponse> {
   return request<CorridaDetailResponse>(`/api/corridas/${idCorrida}`);
 }
+
+export async function fetchMelhorTempo(
+  tipo: string,
+): Promise<MelhorTempoResponse | null> {
+  const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+  const url = `${API_BASE}/api/corridas/melhor-tempo?tipo=${encodeURIComponent(tipo)}`;
+
+  const response = await fetch(url);
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `Erro ao acessar /api/corridas/melhor-tempo`);
+  }
+
+  return response.json() as Promise<MelhorTempoResponse>;
+}
