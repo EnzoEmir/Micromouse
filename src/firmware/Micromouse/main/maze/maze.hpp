@@ -2,21 +2,6 @@
 
 #include <cstdint>
 
-// =============================================================================
-//  Labirinto :: navegacao de micromouse com flood fill OTIMISTA e estrategia
-//               PATH-FOCUSED (ver maze/prompt_micromouse_pathfocused.md).
-//
-//  Principio otimista (ver temParede/floodFill): celulas nunca sensoriadas sao
-//  tratadas como ABERTAS ate prova em contrario. Uma parede so "existe" no mapa
-//  depois de lida por sensor (bit setado). Isso faz o robo se arriscar pelo
-//  desconhecido rumo ao centro. A informacao e monotonica: paredes so aparecem,
-//  nunca somem -> uma descoberta nunca encurta o caminho, so o mantem ou alonga.
-//  E isso que garante a terminacao do laco de exploracao.
-//
-//  STUBS DE HARDWARE: o movimento fisico (girar/avancar) e injetado via
-//  InterfaceRobo (configurarRobo). A leitura dos sensores chega em passo() como
-//  LeituraSensores (paredes RELATIVAS ao heading atual). Ligue ambos ao firmware.
-// =============================================================================
 class Labirinto {
 public:
     static constexpr uint8_t  kMaxSize = 16;
@@ -29,8 +14,6 @@ public:
         k16x16 = 16,
     };
 
-    // Direcoes absolutas. A ordem (N=0, L=1, S=2, O=3) casa com o enum Heading
-    // do firmware, permitindo converter Direcao <-> Heading por cast direto.
     enum class Direcao : uint8_t {
         Norte = 0,
         Leste = 1,
@@ -39,7 +22,6 @@ public:
         Nenhuma = 255,
     };
 
-    // As quatro fases da maquina de estados (ver passo()).
     enum class Fase : uint8_t {
         ExplorarAteObjetivo,  // desce o gradiente rumo ao centro
         RefinarCaminho,       // verifica as celulas incertas sobre o caminho otimo
@@ -58,7 +40,6 @@ public:
         Bloqueado,         // nao ha movimento possivel
     };
 
-    // Bits de parede CONHECIDA. Mantidos compativeis com a telemetria/web:
     // Norte=1, Sul=2, Leste=4, Oeste=8.
     enum Parede : uint8_t {
         ParedeNorte = 1 << 0,
@@ -77,15 +58,12 @@ public:
     // Compatibilidade com os modulos de telemetria/envio_dados.
     using Coordenada = Posicao;
 
-    // Leitura dos 3 ToFs, RELATIVA ao heading atual do robo.
     struct LeituraSensores {
         bool parede_frente;
         bool parede_esquerda;
         bool parede_direita;
     };
 
-    // Stubs de movimento ligados ao firmware. virarPara recebe a direcao
-    // ABSOLUTA de destino (deve girar pelo menor angulo); avancar move 1 celula.
     struct InterfaceRobo {
         void (*virarPara)(Direcao destino) = nullptr;
         void (*avancar)() = nullptr;
@@ -125,33 +103,21 @@ public:
     // Conveniencia: refloda o objetivo e coleta a rota otima inicio->centro.
     uint16_t rotaOtima(Posicao *buffer, uint16_t capacidade);
 
-    // --- Nucleo do algoritmo (exposto conforme o enunciado) ---------------
-
     // BFS reversa a partir de `destino`, respeitando SO paredes conhecidas.
     void floodFill(Posicao destino);
 
-    // Vizinho aberto de menor distancia a partir da posicao atual (desempate:
-    // seguir reto em vez de girar).
     Direcao proximaDirecaoFlood() const;
 
-    // Segue o gradiente de `dist_` (assume floodFill(objetivo)) de inicio ao
-    // objetivo, preenchendo `caminho`.
     void coletarCaminhoOtimo(Posicao caminho[], uint8_t &n) const;
 
-    // true se TODAS as celulas do caminho otimo atual ja foram visitadas
-    // (assume que floodFill(objetivo) foi rodado antes).
     bool caminhoTotalmenteConhecido() const;
 
-    // Celula incerta (nao visitada) mais proxima do robo que esta SOBRE o
-    // caminho otimo atual. ATENCAO A ORDEM DOS FLOODS: coleta o caminho com o
-    // dist_ vigente (floodFill(objetivo)) ANTES de refloodar de pos_.
     Posicao celulaIncertaMaisProxima();
 
     void atualizarParedes(Posicao p, const LeituraSensores &s);
     bool temParede(Posicao p, Direcao d) const;
     Posicao vizinho(Posicao p, Direcao d) const;
 
-    // Vizinho aberto que mais reduz a distancia a partir de `p` (desempate reto).
     Direcao direcaoDeMenorDist(Posicao p) const;
 
 private:
