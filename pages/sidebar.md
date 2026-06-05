@@ -1,6 +1,7 @@
 - [**Home**](pages/docs/README.md)
 - [**Cronograma Geral**](pages/docs/cronograma.md)
 - [**EAP Geral**](pages/docs/eap_geral.md)
+- [**Gerenciamento de Riscos**](pages/docs/gerenciamento_riscos.md)
 - **Núcleos**
   - *1. Eletrônica*
     - [PCB](pages/docs/nucleos/eletronica/pcb.md)
@@ -8,7 +9,6 @@
   - [*2. Energia*](pages/docs/nucleos/energia.md)
   - *3. Estrutura*
     - [Atributos de Componentes Eletrônicos](pages/docs/nucleos/estrutura/lista_atributos_componentes.md)
-    - [Métodos de Transmissão](pages/docs/nucleos/estrutura/estudo_metodos_transmissao.md)
     - Rodas
       - [Características da Roda](pages/docs/nucleos/estrutura/caracteristicas_roda.md)
       - [Esboço de Características Desejáveis](pages/docs/nucleos/estrutura/esboco_caracteristicas_desejaveis_rodas.md)

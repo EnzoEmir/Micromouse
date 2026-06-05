@@ -16,7 +16,7 @@ Em uma abordagem inicial, seria utilizado o conjunto roda interna ABS + pneu ori
 
 O pneu é composto de um **elastômero termoplástico (TPE)** chamado de **SBS** (*estireno-butadieno-estireno*). Esse material é conhecido pela sua flexibilidade, maciez e alta aderência, sendo essa última fundamental para o desejável alto atrito com o solo.
 
-A roda interna, moldada e impressa para o encaixe com o pneu, é feita de filamento PLA (*Ácido Polilático*), um plástico biodegradável comumente utilizado em impressões 3D.
+A roda interna, moldada e impressa para o encaixe com o pneu, é feita de filamento ASA (*Acrilonitrila Estireno Acrilato*), um plástico de alta resistência térmica comumente utilizado em impressões 3D.
 
 ### 2.2. Dimensões
 

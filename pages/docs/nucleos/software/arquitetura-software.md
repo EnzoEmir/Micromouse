@@ -196,7 +196,7 @@ Esse diagrama auxilia na compreensão do comportamento dinâmico do sistema e do
   <em>Figura 2: Diagrama de Estados</em>
 </p>
 
-![Diagrama de Estados](../../../docs/assets/software/diagrama-estados.png)
+![Diagrama de Estados](../../../../docs/nucleos/software/diagrama-estados.png)
 
 <div style="text-align: center;">Autor: <a href="https://github.com/Potatoyz908">Euller</a></div>
 
@@ -232,7 +232,7 @@ O fluxo utiliza **Raias (swimlanes)** para delimitar as responsabilidades entre 
   <em>Figura 3: Diagrama de Atividades UML</em>
 </p>
 
-![Diagrama de Atividades UML](../../../docs/assets/software/diagrama_atividades.png)
+![Diagrama de Atividades UML](../../../../docs/nucleos/software/diagrama_atividades.png)
 
 <div style="text-align: center;">Autores: <a href="https://github.com/MM4k">Marcelo Makoto</a> <a href="https://github.com/dudaa28">Maria Eduarda</a></div>
 
@@ -382,7 +382,7 @@ A visão de processos descreve o comportamento dinâmico do sistema durante uma 
 10. O Micromouse executa a rota otimizada.
 11. A sessão é encerrada.
 
-![Diagrama de Sequência - Ciclo de Vida da Corrida](../../../docs/assets/software/diagrama_sequencia.png)
+![Diagrama de Sequência - Ciclo de Vida da Corrida](../../../../docs/nucleos/software/diagrama_sequencia.png)
 
 <div style="text-align: center;">
   Autores:
@@ -482,7 +482,7 @@ O diagrama a seguir apresenta a organização do sistema em camadas (Apresentaç
   <em>Figura: Diagrama de Pacotes</em>
 </p>
 
-![Diagrama de Pacotes](../../../docs/assets/software/diagrama-pacotes.png)
+![Diagrama de Pacotes](../../../../docs/nucleos/software/diagrama-pacotes.png)
 
 <div style="text-align: center;">Autor: <a href="https://github.com/GabrielCastelo-31">Gabriel Castelo</a></div>
 
@@ -510,7 +510,7 @@ O diagrama de implantação apresenta uma visão física e tecnológica da solu�
 
 A arquitetura proposta considera que o usuário acessa o sistema por meio de um navegador. A interface web é desenvolvida em React e se comunica com o backend desenvolvido em FastAPI. O backend recebe os dados do Micromouse, processa a telemetria, envia atualizações em tempo real para o frontend via WebSocket e persiste os dados no PostgreSQL.
 
-![Diagrama de Implantação](../../../docs/assets/software/diagrama-implantacao.png)
+![Diagrama de Implantação](../../../../docs/nucleos/software/diagrama-implantacao.png)
 
 <div style="text-align: center;">Autor: <a href="https://github.com/Potatoyz908">Euller</a></div>
 
@@ -628,13 +628,13 @@ Como a solução utiliza um banco de dados relacional, foi utilizado um **Modelo
 
 #### 6.5.2 Diagrama Entidade-Relacionamento (DER)
 
-![Diagrama Entidade-Relacionamento](../../../docs/assets/software/diagrama_entidade_relacionamento.png)
+![Diagrama Entidade-Relacionamento](../../../../docs/nucleos/software/diagrama_entidade_relacionamento.png)
 
 <div style="text-align: center;">Autores: <a href="https://github.com/GabrielCastelo-31">Gabriel Castelo</a> e <a href="https://github.com/mtsmgn0">Mateus Magno</a></div>
 
 #### 6.5.3 Diagrama Lógico de Dados (DLD)
 
-![Diagrama Lógico de Dados](../../../docs/assets/software/diagrama_logico_de_dados.png)
+![Diagrama Lógico de Dados](../../../../docs/nucleos/software/diagrama_logico_de_dados.png)
 
 <div style="text-align: center;">Autor: <a href="https://github.com/GabrielCastelo-31">Gabriel Castelo</a></div>
 
