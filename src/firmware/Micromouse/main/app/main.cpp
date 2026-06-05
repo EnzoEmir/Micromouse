@@ -46,7 +46,18 @@ constexpr float FRONT_STOP_MM      = 55.0f;   // CALIBRAR
 constexpr int   DRIVE_PWM          = PWM_MAX / 2; // velocidade de avanco
 constexpr int   TURN_PWM           = PWM_MAX / 3; // velocidade de giro
 constexpr float TURN_TARGET_RAD    = M_PI / 2.0f; // 90 graus por passo de giro
-constexpr float KP_STRAIGHT        = 3.0f;        // ganho da correcao reta (encoder)
+// --- Fusao sensorial (encoder + gyro) para estimar o rumo (heading) ---
+// Peso do gyro no filtro complementar (0..1). Perto de 1 confia mais no gyro
+// no curto prazo; o restante (1-alpha) deixa o encoder corrigir a deriva.
+constexpr float HEADING_ALPHA      = 0.98f;
+// Ganho da correcao de rumo no avanco reto (desvio de PWM por rad de erro).
+constexpr float KP_HEADING         = 400.0f;     // CALIBRAR
+// Geometria para converter contagens de encoder em rotacao do robo.
+constexpr float WHEEL_DIAMETER_M     = 0.024f;   // CALIBRAR: diametro da roda (m)
+constexpr int   COUNTS_PER_WHEEL_REV = 588;      // medido: 147 (1 canal) x4 (quadratura)
+constexpr float TRACK_WIDTH_M        = 0.085f;   // CALIBRAR: distancia entre as rodas (m)
+// Metros percorridos por 1 contagem de encoder (de uma roda).
+constexpr float METERS_PER_COUNT   = (float)M_PI * WHEEL_DIAMETER_M / COUNTS_PER_WHEEL_REV;
 
 // Tamanho fisico aproximado de uma celula (~18 cm); usado para estimar v_med.
 constexpr float CELL_SIZE_M        = 0.18f;
@@ -97,6 +108,11 @@ pcnt_unit_handle_t s_pcnt_unit_r = nullptr;
 pcnt_unit_handle_t s_pcnt_unit_l = nullptr;
 volatile int32_t   s_enc_total_r = 0, s_enc_total_l = 0;
 volatile int16_t   s_enc_last_r  = 0, s_enc_last_l  = 0;
+
+// Estimativa de rumo (heading) fundindo gyro + encoder (filtro complementar).
+volatile float     g_heading_rad = 0.0f;
+int32_t            s_head_last_l = 0, s_head_last_r = 0;
+int64_t            s_head_t_prev = 0;
 
 //  Pose do robo no labirinto
 enum Heading : uint8_t { NORTE = 0, LESTE = 1, SUL = 2, OESTE = 3 };
@@ -213,6 +229,47 @@ float lerGyroZ(float* temp_out) {
     return gz;
 }
 
+//  Fusao sensorial: estimador de rumo (heading)
+
+// Zera o rumo e captura o estado atual de encoders/tempo. Chame no inicio de
+// cada manobra (avanco ou giro) para medir a rotacao a partir do zero.
+void heading_reset() {
+    encoder_read();
+    g_heading_rad = 0.0f;
+    s_head_last_l = s_enc_total_l;
+    s_head_last_r = s_enc_total_r;
+    s_head_t_prev = esp_timer_get_time();
+}
+
+// Funde gyro (curto prazo) + encoder diferencial (ancora de longo prazo) por
+// filtro complementar e devolve o rumo acumulado, em rad. Tambem atualiza os
+// s_enc_total_* (chama encoder_read internamente).
+//   Convencao: gyro_z > 0 e (roda direita avanca mais que a esquerda) => giro
+//   anti-horario (CCW) = rumo positivo. Se vier invertido no hardware, troque
+//   o sinal de dth_enc (ou confira o sinal do gyro_z).
+float heading_update() {
+    encoder_read();
+    const int64_t now = esp_timer_get_time();
+    float dt = (now - s_head_t_prev) / 1e6f;
+    if (dt <= 0.0f) dt = 1e-3f;
+    s_head_t_prev = now;
+
+    // Incremento pelo gyro (rad).
+    const float gz = lerGyroZ(nullptr);
+    const float dth_gyro = gz * dt;
+
+    // Incremento pelo encoder diferencial (rad).
+    const int32_t dl = s_enc_total_l - s_head_last_l;
+    const int32_t dr = s_enc_total_r - s_head_last_r;
+    s_head_last_l = s_enc_total_l;
+    s_head_last_r = s_enc_total_r;
+    const float dth_enc = (float)(dr - dl) * METERS_PER_COUNT / TRACK_WIDTH_M;
+
+    // Filtro complementar: gyro domina o curto prazo, encoder ancora a deriva.
+    g_heading_rad += HEADING_ALPHA * dth_gyro + (1.0f - HEADING_ALPHA) * dth_enc;
+    return g_heading_rad;
+}
+
 //  Primitivas de movimento
 
 // Gira em torno do proprio eixo fechando o angulo pela integracao do gyro.
@@ -229,19 +286,14 @@ void girar(int passos) {
     pwm_left(TURN_PWM);
     pwm_right(TURN_PWM);
 
-    float ang = 0.0f;
-    int64_t t_prev = esp_timer_get_time();
+    // Fecha o angulo pelo rumo fundido (gyro + encoder).
+    heading_reset();
+    const int64_t t_start = esp_timer_get_time();
     const int64_t timeout_us = 4000000; // 4 s de seguranca
-    const int64_t t_start = t_prev;
 
-    while (ang < alvo) {
-        const float gz = lerGyroZ(nullptr);
-        const int64_t now = esp_timer_get_time();
-        const float dt = (now - t_prev) / 1e6f;
-        t_prev = now;
-        ang += std::fabs(gz) * dt;
-        if (now - t_start > timeout_us) {
-            ESP_LOGW(TAG, "girar(): timeout (ang=%.2f rad)", ang);
+    while (std::fabs(heading_update()) < alvo) {
+        if (esp_timer_get_time() - t_start > timeout_us) {
+            ESP_LOGW(TAG, "girar(): timeout (ang=%.2f rad)", std::fabs(g_heading_rad));
             break;
         }
         vTaskDelay(pdMS_TO_TICKS(5));
@@ -266,11 +318,13 @@ void virarPara(Heading destino) {
 // proporcional. Para antes se aparecer parede colada na frente.
 void avancarUmaCelula() {
     encoder_reset();
+    heading_reset();
     dir_left(true);
     dir_right(true);
 
     while (true) {
-        encoder_read();
+        // Funde gyro + encoder (heading_update tambem atualiza s_enc_total_*).
+        const float rumo = heading_update();
         const int32_t avg = (s_enc_total_l + s_enc_total_r) / 2;
         if (avg >= COUNTS_PER_CELL) break;
 
@@ -281,10 +335,11 @@ void avancarUmaCelula() {
             break;
         }
 
-        // Correcao reta: equaliza as contagens das duas rodas.
-        const int32_t erro = s_enc_total_l - s_enc_total_r;
-        int duty_l = DRIVE_PWM - (int)(KP_STRAIGHT * erro);
-        int duty_r = DRIVE_PWM + (int)(KP_STRAIGHT * erro);
+        // Correcao de rumo: mantem o heading em zero (anda reto). rumo > 0
+        // (CCW, nariz p/ esquerda) => acelera a esquerda e freia a direita.
+        const int corr = (int)(KP_HEADING * rumo);
+        int duty_l = DRIVE_PWM + corr;
+        int duty_r = DRIVE_PWM - corr;
         if (duty_l < 0) duty_l = 0;
         if (duty_l > PWM_MAX) duty_l = PWM_MAX;
         if (duty_r < 0) duty_r = 0;
