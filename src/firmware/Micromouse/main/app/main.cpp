@@ -108,13 +108,7 @@ struct Pose {
 };
 Pose g_pose;
 
-// Bit de parede do mapa correspondente a cada direcao absoluta.
-const uint8_t kHeadingParede[4] = {
-    Labirinto::ParedeNorte, // NORTE
-    Labirinto::ParedeLeste, // LESTE
-    Labirinto::ParedeSul,   // SUL
-    Labirinto::ParedeOeste, // OESTE
-};
+// Deslocamento (dx, dy) de cada direcao absoluta; usado por avancarUmaCelula.
 const int8_t kHeadingDx[4] = {0, +1, 0, -1};
 const int8_t kHeadingDy[4] = {+1, 0, -1, 0};
 
@@ -309,50 +303,6 @@ void avancarUmaCelula() {
     g_pose.y = (uint8_t)(g_pose.y + kHeadingDy[g_pose.heading]);
 }
 
-//  Percepcao -> mapa
-void sentirEAtualizarMapa() {
-    const LeituraToF tof = lerToFs();
-    const Heading h = g_pose.heading;
-
-    uint8_t paredes = 0;
-    if (tof.frente   > 0.0f && tof.frente   < WALL_THRESHOLD_MM)
-        paredes |= kHeadingParede[h];
-    if (tof.esquerda > 0.0f && tof.esquerda < WALL_THRESHOLD_MM)
-        paredes |= kHeadingParede[(h + 3) % 4]; // esquerda = heading girado p/ CCW
-    if (tof.direita  > 0.0f && tof.direita  < WALL_THRESHOLD_MM)
-        paredes |= kHeadingParede[(h + 1) % 4]; // direita  = heading girado p/ CW
-
-    g_labirinto.atualizarCelula(g_pose.x, g_pose.y, paredes);
-
-    ESP_LOGI(TAG, "Celula (%u,%u) head=%s | F:%.0f E:%.0f D:%.0f | walls=0x%X",
-             g_pose.x, g_pose.y, nomeDirecao(h),
-             tof.frente, tof.esquerda, tof.direita, paredes);
-}
-
-// Escolhe a direcao do vizinho acessivel com menor distancia de flood fill.
-// Retorna false se nao houver vizinho que reduza a distancia.
-bool escolherProximaDirecao(Heading* saida) {
-    const auto& atual = g_labirinto.celula(g_pose.x, g_pose.y);
-    uint16_t melhor_d = atual.distancia;
-    bool achou = false;
-    Heading melhor_h = g_pose.heading;
-
-    for (int h = 0; h < 4; ++h) {
-        if (atual.walls & kHeadingParede[h]) continue; // parede nessa direcao
-        const int nx = g_pose.x + kHeadingDx[h];
-        const int ny = g_pose.y + kHeadingDy[h];
-        if (!g_labirinto.dentroDosLimites((uint8_t)nx, (uint8_t)ny)) continue;
-        const uint16_t d = g_labirinto.celula((uint8_t)nx, (uint8_t)ny).distancia;
-        if (d < melhor_d) {
-            melhor_d = d;
-            melhor_h = (Heading)h;
-            achou = true;
-        }
-    }
-    if (achou) *saida = melhor_h;
-    return achou;
-}
-
 //  Tasks paralelas (bateria + telemetria)
 void battery_task(void*) {
     const TickType_t delay = pdMS_TO_TICKS(500);
@@ -387,7 +337,7 @@ void telemetria_task(void*) {
     }
 }
 
-//  Loop de navegacao (flood fill)
+//  Loop de navegacao (maquina de estados path-focused do Labirinto)
 void navegacao_task(void*) {
     // Calibra o bias do gyro com o robo PARADO antes de comecar.
     if (xSemaphoreTake(g_i2c_mutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
@@ -396,16 +346,21 @@ void navegacao_task(void*) {
         xSemaphoreGive(g_i2c_mutex);
     }
 
-    // Meta: regiao 2x2 no centro do labirinto.
+    // Liga os stubs de movimento do Labirinto as primitivas do firmware. Os
+    // lambdas sao sem captura -> convertem para ponteiro de funcao. A ordem do
+    // enum Direcao (N=0,L=1,S=2,O=3) casa com Heading, dai o cast direto.
+    Labirinto::InterfaceRobo robo;
+    robo.virarPara = [](Labirinto::Direcao d) { virarPara(static_cast<Heading>(d)); };
+    robo.avancar   = []() { avancarUmaCelula(); };
+    g_labirinto.configurarRobo(robo);
+
+    // Objetivo: uma celula do centro do labirinto. Largada em (0,0), heading N.
     const uint8_t n = g_labirinto.tamanho();
     const uint8_t centro = (uint8_t)(n / 2 - 1);
-    if (!g_labirinto.definirChegada(centro, centro)) {
-        ESP_LOGE(TAG, "Falha ao definir chegada no centro (%u,%u)", centro, centro);
-    }
-
+    g_labirinto.iniciar({0, 0}, {centro, centro});
     g_pose = {0, 0, NORTE};
 
-    ESP_LOGI(TAG, "=== Iniciando exploracao por flood fill ===");
+    ESP_LOGI(TAG, "=== Iniciando navegacao path-focused (flood fill otimista) ===");
 
     // Referencias para estimar a velocidade media (pacote de fim de corrida).
     const int64_t t_corrida_us = esp_timer_get_time();
@@ -415,62 +370,81 @@ void navegacao_task(void*) {
         return dt_s > 0.0f ? (avancos * CELL_SIZE_M) / dt_s : 0.0f;
     };
 
-    while (true) {
-        // 1. Percebe as paredes na celula atual e registra no mapa.
-        sentirEAtualizarMapa();
+    bool terminar = false;
+    int passos_bloqueado = 0;
 
-        // Telemetria (tipo 1): reporta a celula recem-visitada e suas paredes.
-        g_telemetria.movimento(g_pose.x, g_pose.y,
-                               g_labirinto.celula(g_pose.x, g_pose.y).walls);
+    while (!terminar) {
+        // 1. Le os ToFs e monta a leitura RELATIVA ao heading atual.
+        const LeituraToF tof = lerToFs();
+        Labirinto::LeituraSensores ls;
+        ls.parede_frente   = tof.frente   > 0.0f && tof.frente   < WALL_THRESHOLD_MM;
+        ls.parede_esquerda = tof.esquerda > 0.0f && tof.esquerda < WALL_THRESHOLD_MM;
+        ls.parede_direita  = tof.direita  > 0.0f && tof.direita  < WALL_THRESHOLD_MM;
 
-        // 2. Verifica se chegou na meta.
-        if (g_labirinto.estaNaChegada(g_pose.x, g_pose.y)) {
-            ESP_LOGI(TAG, "*** META ALCANCADA em (%u,%u) ***", g_pose.x, g_pose.y);
-            motores_para();
+        // 2. Um passo da maquina de estados: registra paredes, decide a proxima
+        //    direcao e ja executa o giro+avanco via os callbacks de movimento.
+        const Labirinto::Resultado r = g_labirinto.passo(ls);
 
-            // Telemetria (tipo 2): rota otima do flood fill, de (0,0) ate a meta.
-            g_labirinto.executarFloodFill();
-            Labirinto::Coordenada rota[Labirinto::kMaxCaminho];
-            uint16_t rota_len = 0;
-            if (g_labirinto.melhorCaminho({0, 0}, rota, Labirinto::kMaxCaminho, &rota_len)) {
-                g_telemetria.rota_otimizada(rota, rota_len);
-            } else {
-                ESP_LOGW(TAG, "Nao foi possivel extrair a rota otima.");
-            }
-
-            // Telemetria (tipo 3): fim de corrida com sucesso.
-            g_telemetria.fim_corrida(true, velocidade_media(), g_snap_soc);
-            break;
+        // 3. Telemetria (tipo 1): reporta a celula recem-sensoriada.
+        if (g_labirinto.sensoriou()) {
+            const Labirinto::Posicao ps = g_labirinto.posicaoSensoriada();
+            const uint8_t w = g_labirinto.paredes(ps);
+            g_telemetria.movimento(ps.x, ps.y, w);
+            ESP_LOGI(TAG, "Celula (%u,%u) head=%s | F:%.0f E:%.0f D:%.0f | walls=0x%X",
+                     ps.x, ps.y, nomeDirecao(g_pose.heading),
+                     tof.frente, tof.esquerda, tof.direita, w);
         }
+        if (r == Labirinto::Resultado::EmProgresso) ++avancos;
 
-        // 3. Recalcula as distancias e escolhe o vizinho que mais aproxima.
-        g_labirinto.executarFloodFill();
-        Heading destino;
-        if (!escolherProximaDirecao(&destino)) {
-            ESP_LOGW(TAG, "Sem vizinho melhor em (%u,%u). Encerrando.",
-                     g_pose.x, g_pose.y);
-            motores_para();
-            // Telemetria (tipo 3): fim de corrida sem sucesso.
-            g_telemetria.fim_corrida(false, velocidade_media(), g_snap_soc);
-            break;
-        }
-
-        // 4. Gira para a direcao escolhida e avanca uma celula.
-        virarPara(destino);
-        avancarUmaCelula();
-        ++avancos;
-
-        // Atualiza a temperatura do IMU para a telemetria.
+        // 4. Monitoramento de temperatura do IMU (alerta tipo 5).
         float temp = g_snap_temp;
         lerGyroZ(&temp);
         atualizarSnapshot(g_snap_soc, temp);
-
-        // Telemetria (tipo 5): aborta a corrida em caso de superaquecimento.
         if (temp >= TEMP_CRITICA_C) {
             ESP_LOGE(TAG, "Temperatura critica: %.1f C. Abortando corrida.", temp);
             motores_para();
             g_telemetria.alerta_temperatura(temp);
             break;
+        }
+
+        // 5. Reage ao resultado do passo.
+        switch (r) {
+            case Labirinto::Resultado::AlcancouObjetivo: {
+                ESP_LOGI(TAG, "*** Centro alcancado. Refinando o caminho otimo... ***");
+                // Telemetria (tipo 2): rota otima atual de (0,0) ate o centro.
+                Labirinto::Coordenada rota[Labirinto::kMaxCaminho];
+                const uint16_t nlen = g_labirinto.rotaOtima(rota, Labirinto::kMaxCaminho);
+                if (nlen > 0) g_telemetria.rota_otimizada(rota, nlen);
+                passos_bloqueado = 0;
+                break;
+            }
+            case Labirinto::Resultado::FastRunCompleto: {
+                ESP_LOGI(TAG, "*** Fast run concluida. ***");
+                motores_para();
+                // Telemetria (tipo 2): rota otima verificada (mapa fechado).
+                Labirinto::Coordenada rota[Labirinto::kMaxCaminho];
+                const uint16_t nlen = g_labirinto.rotaOtima(rota, Labirinto::kMaxCaminho);
+                if (nlen > 0) g_telemetria.rota_otimizada(rota, nlen);
+                // Telemetria (tipo 3): fim de corrida com sucesso.
+                g_telemetria.fim_corrida(true, velocidade_media(), g_snap_soc);
+                terminar = true;
+                break;
+            }
+            case Labirinto::Resultado::Bloqueado: {
+                // Tolera bloqueios transitorios (recomputo de alvo); so desiste
+                // se persistir por varios passos seguidos.
+                if (++passos_bloqueado > 4) {
+                    const Labirinto::Posicao p = g_labirinto.posicao();
+                    ESP_LOGW(TAG, "Bloqueado em (%u,%u). Encerrando sem sucesso.", p.x, p.y);
+                    motores_para();
+                    g_telemetria.fim_corrida(false, velocidade_media(), g_snap_soc);
+                    terminar = true;
+                }
+                break;
+            }
+            default:
+                passos_bloqueado = 0;
+                break;
         }
     }
 
