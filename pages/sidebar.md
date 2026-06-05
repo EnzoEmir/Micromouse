@@ -16,3 +16,4 @@
     - [Arquitetura de Software](pages/docs/nucleos/software/arquitetura-software.md)
     - [Backlog do Produto](pages/docs/nucleos/software/backlog-produto.md)
     - [Roteiro de Testes Funcionais](pages/docs/nucleos/software/roteiro-testes-funcionais.md)
+    - [Testes de Software (7.5)](pages/docs/nucleos/software/testes-software.md)

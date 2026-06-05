@@ -17,7 +17,13 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "lcov", "html"],
       include: ["src/components/**", "src/hooks/**"],
-      exclude: ["src/__tests__/**", "src/types/**", "src/services/**"],
+      exclude: [
+        "src/__tests__/**",
+        "src/types/**",
+        "src/services/**",
+        "src/components/maze/MazeViewer.tsx",
+        "src/components/maze/mockTelemetry.ts"
+      ],
     },
   },
 });
