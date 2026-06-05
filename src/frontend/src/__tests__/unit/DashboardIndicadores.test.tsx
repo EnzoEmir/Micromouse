@@ -6,6 +6,7 @@ import {
   mockBateriaCritica,
   mockBateriaNormal,
 } from "../utils/telemetria-mocks";
+import type { UseTelemetriaReturn } from "../../hooks/useTelemetria";
 
 vi.mock("../../hooks/useTelemetria", () => ({
   useTelemetria: vi.fn(),
@@ -50,6 +51,10 @@ function configurarHook(
     configSessao: { dimensao: null },
     enviarPacote: vi.fn(),
     erro: null,
+    ultimaMovimentacao: null,
+    filaMovimentacoes: [],
+    limparFilaMovimentacoes: vi.fn(),
+    contadorNovoRecorde: 0,
   } as unknown as ReturnType<typeof useTelemetria>);
 }
 
@@ -57,14 +62,14 @@ function configurarHook(
 describe("CT01 — Estado Vazio: renderização sem dados de telemetria", () => {
   beforeEach(() => { configurarHook(mockAguardando, false); });
 
-  it("renderiza o título principal do dashboard", () => {
+  it("renderiza o label de Bateria", () => {
     render(<DashboardIndicadores />);
-    expect(screen.getByText("Indicadores de Desempenho")).toBeInTheDocument();
+    expect(screen.getByText("Bateria")).toBeInTheDocument();
   });
 
-  it("exibe status 'Aguardando' no badge de corrida", () => {
+  it("exibe o label Controle da Sessão", () => {
     render(<DashboardIndicadores />);
-    expect(screen.getByText(/Corrida: Aguardando/i)).toBeInTheDocument();
+    expect(screen.getByText("Controle da Sessão")).toBeInTheDocument();
   });
 
   it("exibe '--' como valor de bateria", () => {
@@ -72,9 +77,9 @@ describe("CT01 — Estado Vazio: renderização sem dados de telemetria", () => 
     expect(screen.getByText("--%")).toBeInTheDocument();
   });
 
-  it("exibe '-- cm/s' como valor de velocidade", () => {
+  it("exibe '--' como valor de velocidade quando sem dados", () => {
     render(<DashboardIndicadores />);
-    expect(screen.getByText("-- cm/s")).toBeInTheDocument();
+    expect(screen.getByText("--")).toBeInTheDocument();
   });
 
   it("exibe '00:00.000' como tempo", () => {
@@ -82,19 +87,14 @@ describe("CT01 — Estado Vazio: renderização sem dados de telemetria", () => 
     expect(screen.getByText("00:00.000")).toBeInTheDocument();
   });
 
-  it("exibe descrição 'Aguardando telemetria' no card de bateria", () => {
+  it("exibe modo de execução 'Aguardando'", () => {
     render(<DashboardIndicadores />);
-    expect(screen.getByText("Aguardando telemetria")).toBeInTheDocument();
+    expect(screen.getByText("Aguardando")).toBeInTheDocument();
   });
 
-  it("exibe descrição 'Aguardando largada' no card de tempo", () => {
+  it("exibe status 'Offline' quando desconectado", () => {
     render(<DashboardIndicadores />);
-    expect(screen.getByText("Aguardando largada")).toBeInTheDocument();
-  });
-
-  it("exibe 'WebSocket: Desconectado'", () => {
-    render(<DashboardIndicadores />);
-    expect(screen.getByText(/WebSocket: Desconectado/i)).toBeInTheDocument();
+    expect(screen.getByText("Offline")).toBeInTheDocument();
   });
 
   it("NÃO exibe alerta de bateria crítica", () => {
@@ -119,7 +119,7 @@ describe("CT03 — Alerta de Bateria Crítica: bateria <= 10%", () => {
 
   it("exibe o banner de alerta de bateria crítica", () => {
     render(<DashboardIndicadores />);
-    expect(screen.getByText(/Bateria crítica: nível em/i)).toBeInTheDocument();
+    expect(screen.getByText(/Bateria crítica/i)).toBeInTheDocument();
   });
 
   it("exibe o valor real da bateria no card", () => {
@@ -127,19 +127,9 @@ describe("CT03 — Alerta de Bateria Crítica: bateria <= 10%", () => {
     expect(screen.getByText("8.0%")).toBeInTheDocument();
   });
 
-  it("exibe 'Bateria crítica' como descrição no card", () => {
-    render(<DashboardIndicadores />);
-    expect(screen.getByText("Bateria crítica")).toBeInTheDocument();
-  });
-
   it("abre o modal de alerta crítico", () => {
     render(<DashboardIndicadores />);
     expect(screen.getByRole("alertdialog")).toBeInTheDocument();
-  });
-
-  it("exibe o título correto no modal", () => {
-    render(<DashboardIndicadores />);
-    expect(screen.getByText(/Nível de bateria ≤ 10%/i)).toBeInTheDocument();
   });
 });
 
@@ -154,7 +144,7 @@ describe("CT04 — Bateria Normal: bateria > 10%", () => {
 
   it("NÃO exibe o banner de alerta de bateria crítica", () => {
     render(<DashboardIndicadores />);
-    expect(screen.queryByText(/Bateria crítica: nível em/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Bateria crítica/i)).not.toBeInTheDocument();
   });
 
   it("NÃO exibe o modal de alerta crítico", () => {
@@ -162,18 +152,13 @@ describe("CT04 — Bateria Normal: bateria > 10%", () => {
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
-  it("exibe 'Última bateria conhecida' como descrição", () => {
+  it("exibe status 'Online' quando conectado", () => {
     render(<DashboardIndicadores />);
-    expect(screen.getByText("Última bateria conhecida")).toBeInTheDocument();
+    expect(screen.getByText("Online")).toBeInTheDocument();
   });
 
-  it("exibe 'WebSocket: Conectado'", () => {
+  it("exibe modo de execução 'Mapeamento' quando em andamento", () => {
     render(<DashboardIndicadores />);
-    expect(screen.getByText(/WebSocket: Conectado/i)).toBeInTheDocument();
-  });
-
-  it("exibe status 'Em andamento'", () => {
-    render(<DashboardIndicadores />);
-    expect(screen.getByText(/Corrida: Em andamento/i)).toBeInTheDocument();
+    expect(screen.getByText("Mapeamento")).toBeInTheDocument();
   });
 });

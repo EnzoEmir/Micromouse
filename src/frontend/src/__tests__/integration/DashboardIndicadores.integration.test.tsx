@@ -51,6 +51,10 @@ function configurarHook(
     configSessao: { dimensao: null },
     enviarPacote: vi.fn(),
     erro: null,
+    ultimaMovimentacao: null,
+    filaMovimentacoes: [],
+    limparFilaMovimentacoes: vi.fn(),
+    contadorNovoRecorde: 0,
   } as unknown as ReturnType<typeof useTelemetria>);
 }
 
@@ -68,7 +72,7 @@ describe("CT05 — Atualização em Tempo Real", () => {
     const { rerender } = render(<DashboardIndicadores />);
 
     expect(screen.getByText("--%")).toBeInTheDocument();
-    expect(screen.getByText("-- cm/s")).toBeInTheDocument();
+    expect(screen.getByText("--")).toBeInTheDocument();
     expect(screen.getByText("00:00.000")).toBeInTheDocument();
 
     act(() => {
@@ -77,11 +81,11 @@ describe("CT05 — Atualização em Tempo Real", () => {
     });
 
     expect(screen.getByText("72.5%")).toBeInTheDocument();
-    expect(screen.getByText("35.87 cm/s")).toBeInTheDocument();
+    expect(screen.getByText("35.9 cm/s")).toBeInTheDocument();
     expect(screen.getByText("01:05.430")).toBeInTheDocument();
   });
 
-  it("exibe status 'Em andamento' após receber pacote válido", () => {
+  it("exibe modo de execução 'Mapeamento' após receber pacote válido", () => {
     configurarHook(mockAguardando, false);
     const { rerender } = render(<DashboardIndicadores />);
 
@@ -90,7 +94,7 @@ describe("CT05 — Atualização em Tempo Real", () => {
       rerender(<DashboardIndicadores />);
     });
 
-    expect(screen.getByText(/Corrida: Em andamento/i)).toBeInTheDocument();
+    expect(screen.getByText("Mapeamento")).toBeInTheDocument();
   });
 
   it("atualiza o tempo quando segundo pacote chega", () => {
@@ -108,10 +112,10 @@ describe("CT05 — Atualização em Tempo Real", () => {
     expect(screen.getByText("01:10.000")).toBeInTheDocument();
   });
 
-  it("formata velocidade com exatamente 2 casas decimais", () => {
+  it("formata velocidade com exatamente 1 casa decimal", () => {
     configurarHook(criarIndicadores({ velocidade_media: 0.1 }), true);
     render(<DashboardIndicadores />);
-    expect(screen.getByText("0.10 cm/s")).toBeInTheDocument();
+    expect(screen.getByText("0.1 cm/s")).toBeInTheDocument();
   });
 });
 
@@ -188,19 +192,6 @@ describe("CT07 — Encerramento de Corrida", () => {
     expect(screen.getByText("01:33.210")).toBeInTheDocument();
   });
 
-  it("exibe o título 'Tempo final' após conclusão", () => {
-    configurarHook(mockConcluida, true);
-    render(<DashboardIndicadores />);
-    expect(screen.getByText("Tempo final")).toBeInTheDocument();
-    expect(screen.queryByText("Tempo decorrido")).not.toBeInTheDocument();
-  });
-
-  it("exibe descrição 'Tempo fixado após conclusão'", () => {
-    configurarHook(mockConcluida, true);
-    render(<DashboardIndicadores />);
-    expect(screen.getByText("Tempo fixado após conclusão")).toBeInTheDocument();
-  });
-
   it("mantém o tempo final fixo após re-renders", () => {
     configurarHook(mockConcluida, true);
     const { rerender } = render(<DashboardIndicadores />);
@@ -234,5 +225,11 @@ describe("CT07 — Encerramento de Corrida", () => {
     act(() => { vi.advanceTimersByTime(5000); });
 
     expect(screen.queryByText(/Ausência de telemetria recente/i)).not.toBeInTheDocument();
+  });
+
+  it("exibe modo 'Finalizado' após conclusão da corrida", () => {
+    configurarHook(mockConcluida, true);
+    render(<DashboardIndicadores />);
+    expect(screen.getByText("Finalizado")).toBeInTheDocument();
   });
 });
