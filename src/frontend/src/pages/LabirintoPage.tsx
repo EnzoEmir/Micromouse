@@ -43,7 +43,7 @@ export function LabirintoPage({
             <ControlPanel telemetria={telemetria} />
           </div>
 
-          <div className="flex-1 w-full flex flex-col justify-center items-center rounded-2xl bg-zinc-900/30 border border-zinc-800/80 p-4 lg:p-6 shadow-sm overflow-hidden">
+          <div data-testid="mapa-labirinto" className="flex-1 w-full flex flex-col justify-center items-center rounded-2xl bg-zinc-900/30 border border-zinc-800/80 p-4 lg:p-6 shadow-sm overflow-hidden">
             <MazeViewer showHeader={false} showSidebar={false} standalone={false} />
           </div>
         </div>
