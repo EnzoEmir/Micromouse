@@ -84,7 +84,11 @@ const BadgeStatus: React.FC<{ status: StatusCorrida }> = ({ status }) => {
     classes: "bg-neutral-100 text-neutral-600",
   };
   return (
-    <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${classes}`}>
+    <span
+      data-testid="status-desafio-cumprido"
+      data-status={status}
+      className={`rounded-full px-2.5 py-1 text-xs font-medium ${classes}`}
+    >
       {label}
     </span>
   );
@@ -200,18 +204,24 @@ export function SessionsPage({
       statusConexao={telemetria.statusConexao}
       mensagemStatusConexao={telemetria.mensagemStatusConexao}
     >
-      {/* Destaque: melhor tempo (CA-17-01) */}
-      <div className="mb-8">
+      {/* Destaque: melhor tempo (CA-17-01) — data-testid para CT-S06/HU-17 */}
+      <div className="mb-8" data-testid="card-melhor-tempo">
         <CardMelhorTempo
           tipo={tipoParaRecorde}
           melhorTempo={melhorTempo}
           loading={loadingRecorde}
           erro={erroRecorde}
         />
+        {/* Valor do melhor tempo para CT-S06/HU-17 */}
+        {melhorTempo && (
+          <span data-testid="melhor-tempo-valor" className="sr-only">
+            {formatarTempo(melhorTempo.tempo_total)}
+          </span>
+        )}
       </div>
 
-      {/* Filtro por tipo */}
-      <div className="mb-4 flex items-center gap-2">
+      {/* Filtro por tipo — data-testid para CT-S06/HU-19 */}
+      <div className="mb-4 flex items-center gap-2" data-testid="filtro-labirinto">
         <span className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
           Filtrar por tipo:
         </span>
@@ -220,6 +230,8 @@ export function SessionsPage({
             <button
               key={value}
               type="button"
+              data-tipo={value}
+              data-testid={`filtro-labirinto-${value}`}
               onClick={() => setTipoSelecionado(value)}
               className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
                 tipoSelecionado === value
@@ -233,7 +245,7 @@ export function SessionsPage({
         </div>
       </div>
 
-      {/* Tabela de corridas */}
+      {/* Tabela de corridas — data-testid para CT-S07/HU-19 */}
       <div className="w-full rounded-2xl border border-neutral-200 bg-white shadow-sm overflow-hidden">
         <div className="border-b border-neutral-100 px-6 py-4">
           <h2 className="text-lg font-semibold text-zinc-950">Corridas</h2>
@@ -274,7 +286,8 @@ export function SessionsPage({
                 </th>
               </tr>
             </thead>
-            <tbody>
+            {/* data-testid="lista-corridas" na tbody para CT-S07/HU-19 */}
+            <tbody data-testid="lista-corridas">
               {loading ? (
                 Array.from({ length: 5 }).map((_, i) => (
                   <tr key={i} className="border-b border-neutral-100">
@@ -298,7 +311,8 @@ export function SessionsPage({
                 corridas.map((corrida) => (
                   <tr
                     key={corrida.id_corrida}
-                    className="border-b border-neutral-100 transition hover:bg-neutral-50"
+                    data-tipo-labirinto={corrida.tipo_labirinto ?? undefined}
+                    className="border-b border-neutral-100 transition hover:bg-neutral-50 cursor-pointer"
                   >
                     <td className="px-6 py-4 font-mono text-xs text-zinc-500">
                       {formatarIdCorrida(corrida.id_corrida)}
