@@ -150,6 +150,19 @@
 **Módulos cobertos:** `app/routers/labirinto.py`  
 **HU relacionada:** US-17 (Melhor Resultado / Recorde)
 
+#### `test_integracao_firmware.py` — Integração Firmware ↔ Backend
+
+| Classe/Função | Casos | Descrição |
+|---|---|---|
+| `test_cenario_corridas_sequenciais` | 1 | Simula cenário realista com múltiplas corridas no mesmo banco (sucesso, falha, interrupções). |
+| `TestContratoTelemetriaMd` | 44 | Valida estritamente os campos e restrições dos pacotes de 0 a 5 com base no documento `telemetria.md`. |
+| `TestCenariosAdversos` | 6 | Verifica a resiliência a timestamps regressivos/negativos, baterias inválidas e pacotes sem sessão ativa. |
+| `TestBroadcastWebSocket` | 4 | Garante o envio correto dos eventos (`SESSAO_INICIADA`, `MOVIMENTACAO`, `HEARTBEAT`, etc.) via WebSocket. |
+| `TestDimensoesLabirinto` | 3 | Valida se as dimensões permitidas (4, 8, 16) mapeiam corretamente para os tipos de labirinto no banco. |
+
+**Módulos cobertos:** Integração ponta-a-ponta, validando contrato (`telemetria.md`), roteamento, persistência e websocket.
+**HU relacionada:** HU-08, HU-09, HU-10, HU-11, HU-14, HU-15, HU-16, HU-19, HU-20
+
 ---
 
 ## 3. Suítes de Testes do Frontend
@@ -429,10 +442,10 @@ npx playwright test e2e/tests/historico.spec.ts
 
 ## 6. Resultados da Execução
 
-### 6.1 Backend — 151 testes (todos passando ✅)
+### 6.1 Backend — 209 testes (todos passando ✅)
 
 ```
-============================= 151 passed in 11.20s =============================
+============================= 209 passed in 16.31s =============================
 ```
 
 | Arquivo de Teste | Testes | Status |
@@ -445,7 +458,8 @@ npx playwright test e2e/tests/historico.spec.ts
 | `test_telemetria.py` | 54 | ✅ Passed |
 | `test_telemetria_router.py` | 11 | ✅ Passed |
 | `test_websocket.py` | 3 | ✅ Passed |
-| **Total** | **151** | ✅ |
+| `test_integracao_firmware.py` | 58 | ✅ Passed |
+| **Total** | **209** | ✅ |
 
 ### 6.2 Frontend — 129 testes (todos passando ✅)
 
@@ -534,28 +548,28 @@ app/models/evento.py                    10      0   100%
 app/models/labirinto.py                 10      0   100%
 app/models/percurso.py                  13      0   100%
 app/routers/__init__.py                  0      0   100%
-app/routers/corridas.py                 66     42    36%
-app/routers/labirinto.py                38     16    58%
-app/routers/rankings.py                 16      6    62%
-app/routers/telemetria.py              199      8    96%
+app/routers/corridas.py                 66     42    36%   35-40, 55-65, 85-96, 116-127, 143-159, 174-195, 211, 230
+app/routers/labirinto.py                38     16    58%   38-46, 111-130, 158-165
+app/routers/rankings.py                 16      6    62%   38-57
+app/routers/telemetria.py              195      7    96%   71-72, 261, 329, 387, 421-423
 app/schemas/__init__.py                  0      0   100%
 app/schemas/corrida.py                  60      0   100%
 app/schemas/labirinto.py                26      0   100%
 app/schemas/telemetria.py               81      0   100%
 app/services/__init__.py                 0      0   100%
 app/services/connection_monitor.py      72      0   100%
-app/services/registro.py                67      2    97%
-app/services/telemetria.py             256     21    92%
-app/services/websocket_manager.py       27      5    81%
+app/services/registro.py                67      2    97%   119-123
+app/services/telemetria.py             256     18    93%   101, 103, 110, 142, 157, 183-184, 187-188, 192-193, 195, 200, 208, 214, 216, 513, 558
+app/services/websocket_manager.py       27      5    81%   20-21, 28-29, 32
 ------------------------------------------------------------------
-TOTAL                                 1037    103    90%
+TOTAL                                 1033     99    90%
 ```
 
 **Destaques de cobertura por módulo crítico:**
 
 | Módulo | Cobertura | Observação |
 |---|---|---|
-| `services/telemetria.py` | 92% | Lógica pura de indicadores |
+| `services/telemetria.py` | 93% | Lógica pura de indicadores |
 | `services/connection_monitor.py` | 100% | Monitoramento de conexão |
 | `routers/telemetria.py` | 96% | Endpoint de recepção |
 | `schemas/telemetria.py` | 100% | Modelos de dados |
@@ -597,18 +611,18 @@ Os componentes não cobertos são primariamente visuais (`MazeViewer.tsx` — re
 
 | HU | Descrição | Testes Backend | Testes Frontend | Testes E2E |
 |---|---|---|---|---|
-| US-04 | Recepção de telemetria via HTTP | `test_telemetria_router.py`, `test_websocket.py` | — | — |
+| US-04 | Recepção de telemetria via HTTP | `test_telemetria_router.py`, `test_websocket.py`, `test_integracao_firmware.py` | — | — |
 | US-05 | Indicadores de desempenho no dashboard | `test_telemetria.py` | `DashboardIndicadores.test.tsx`, `DashboardIndicadores.integration.test.tsx`, `formatarTempo.test.ts` | CT-S04 |
-| US-06 | Persistência de dados de corrida | `test_persistencia.py` | — | — |
+| US-06 | Persistência de dados de corrida | `test_persistencia.py`, `test_integracao_firmware.py` | — | — |
 | US-07 | Alertas funcionais (bateria, parada) | `test_alertas_funcionais.py`, `test_telemetria.py` | `DashboardIndicadores.test.tsx` (CT03, CT04) | CT-S04 |
-| US-09 | Monitoramento de conexão online/offline | `test_connection_monitor.py` | `DashboardIndicadores.integration.test.tsx` (CT06), `MonitoringLayout.test.tsx`, `Session.test.tsx` | CT-S03 |
+| US-09 | Monitoramento de conexão online/offline | `test_connection_monitor.py`, `test_integracao_firmware.py` | `DashboardIndicadores.integration.test.tsx` (CT06), `MonitoringLayout.test.tsx`, `Session.test.tsx` | CT-S03 |
 | US-10 | Heartbeat periódico | `test_novos_pacotes.py` (Heartbeat) | — | — |
 | US-11 | Alerta de temperatura crítica | `test_novos_pacotes.py` (AlertaTemperatura) | — | — |
 | US-12 | Consulta de corridas no banco | `test_persistencia.py` (TestSalvarCorrida) | `CorridaDashboard.integration.test.tsx`, `useCorrida.integration.test.tsx` | — |
 | US-13 | Visualização do labirinto (rastro) | — | `normalizePathToOrthogonal.test.ts`, `mazeUtils.test.ts` | CT-S03 |
 | US-17 | Melhor resultado / recorde | `test_melhor_resultado.py` | `CardMelhorTempo.test.tsx`, `CardMelhorTempo.integration.test.tsx` | CT-S06 |
 | HU-19 | Consulta geral de todos os labirintos | — | `CorridaDashboard.integration.test.tsx`, `useCorrida.integration.test.tsx` | CT-S07 |
-| HU-20 | Comunicação com Micromouse | — | — | CT-S01 |
+| HU-20 | Comunicação com Micromouse | `test_integracao_firmware.py` | — | CT-S01 |
 
 ---
 
@@ -700,6 +714,7 @@ src/
 │   │   ├── conftest.py                         # Fixtures compartilhadas
 │   │   ├── test_alertas_funcionais.py          # 3 testes
 │   │   ├── test_connection_monitor.py          # 17 testes
+│   │   ├── test_integracao_firmware.py         # 58 testes
 │   │   ├── test_melhor_resultado.py            # 7 testes
 │   │   ├── test_novos_pacotes.py               # 31 testes
 │   │   ├── test_persistencia.py                # 18 testes
@@ -741,7 +756,7 @@ src/
     └── vitest.config.ts
 ```
 
-**Total geral: 310 testes automatizados (151 backend + 129 frontend + 30 E2E)**
+**Total geral: 368 testes automatizados (209 backend + 129 frontend + 30 E2E)**
 
 ---
 
