@@ -442,7 +442,7 @@ npx playwright test e2e/tests/historico.spec.ts
 
 ## 6. Resultados da Execução
 
-### 6.1 Backend — 151 testes (todos passando ✅)
+### 6.1 Backend — 209 testes (todos passando ✅)
 
 ```
 ============================= 209 passed in 16.31s =============================
@@ -611,18 +611,18 @@ Os componentes não cobertos são primariamente visuais (`MazeViewer.tsx` — re
 
 | HU | Descrição | Testes Backend | Testes Frontend | Testes E2E |
 |---|---|---|---|---|
-| US-04 | Recepção de telemetria via HTTP | `test_telemetria_router.py`, `test_websocket.py` | — | — |
+| US-04 | Recepção de telemetria via HTTP | `test_telemetria_router.py`, `test_websocket.py`, `test_integracao_firmware.py` | — | — |
 | US-05 | Indicadores de desempenho no dashboard | `test_telemetria.py` | `DashboardIndicadores.test.tsx`, `DashboardIndicadores.integration.test.tsx`, `formatarTempo.test.ts` | CT-S04 |
-| US-06 | Persistência de dados de corrida | `test_persistencia.py` | — | — |
+| US-06 | Persistência de dados de corrida | `test_persistencia.py`, `test_integracao_firmware.py` | — | — |
 | US-07 | Alertas funcionais (bateria, parada) | `test_alertas_funcionais.py`, `test_telemetria.py` | `DashboardIndicadores.test.tsx` (CT03, CT04) | CT-S04 |
-| US-09 | Monitoramento de conexão online/offline | `test_connection_monitor.py` | `DashboardIndicadores.integration.test.tsx` (CT06), `MonitoringLayout.test.tsx`, `Session.test.tsx` | CT-S03 |
+| US-09 | Monitoramento de conexão online/offline | `test_connection_monitor.py`, `test_integracao_firmware.py` | `DashboardIndicadores.integration.test.tsx` (CT06), `MonitoringLayout.test.tsx`, `Session.test.tsx` | CT-S03 |
 | US-10 | Heartbeat periódico | `test_novos_pacotes.py` (Heartbeat) | — | — |
 | US-11 | Alerta de temperatura crítica | `test_novos_pacotes.py` (AlertaTemperatura) | — | — |
 | US-12 | Consulta de corridas no banco | `test_persistencia.py` (TestSalvarCorrida) | `CorridaDashboard.integration.test.tsx`, `useCorrida.integration.test.tsx` | — |
 | US-13 | Visualização do labirinto (rastro) | — | `normalizePathToOrthogonal.test.ts`, `mazeUtils.test.ts` | CT-S03 |
 | US-17 | Melhor resultado / recorde | `test_melhor_resultado.py` | `CardMelhorTempo.test.tsx`, `CardMelhorTempo.integration.test.tsx` | CT-S06 |
 | HU-19 | Consulta geral de todos os labirintos | — | `CorridaDashboard.integration.test.tsx`, `useCorrida.integration.test.tsx` | CT-S07 |
-| HU-20 | Comunicação com Micromouse | — | — | CT-S01 |
+| HU-20 | Comunicação com Micromouse | `test_integracao_firmware.py` | — | CT-S01 |
 
 ---
 
@@ -756,7 +756,7 @@ src/
     └── vitest.config.ts
 ```
 
-**Total geral: 310 testes automatizados (151 backend + 129 frontend + 30 E2E)**
+**Total geral: 368 testes automatizados (209 backend + 129 frontend + 30 E2E)**
 
 ---
 
