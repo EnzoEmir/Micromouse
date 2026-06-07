@@ -402,28 +402,28 @@ app/models/evento.py                    10      0   100%
 app/models/labirinto.py                 10      0   100%
 app/models/percurso.py                  13      0   100%
 app/routers/__init__.py                  0      0   100%
-app/routers/corridas.py                 66     42    36%
-app/routers/labirinto.py                38     16    58%
-app/routers/rankings.py                 16      6    62%
-app/routers/telemetria.py              199      8    96%
+app/routers/corridas.py                 66     42    36%   35-40, 55-65, 85-96, 116-127, 143-159, 174-195, 211, 230
+app/routers/labirinto.py                38     16    58%   38-46, 111-130, 158-165
+app/routers/rankings.py                 16      6    62%   38-57
+app/routers/telemetria.py              195      7    96%   71-72, 261, 329, 387, 421-423
 app/schemas/__init__.py                  0      0   100%
 app/schemas/corrida.py                  60      0   100%
 app/schemas/labirinto.py                26      0   100%
 app/schemas/telemetria.py               81      0   100%
 app/services/__init__.py                 0      0   100%
 app/services/connection_monitor.py      72      0   100%
-app/services/registro.py                67      2    97%
-app/services/telemetria.py             256     21    92%
-app/services/websocket_manager.py       27      5    81%
+app/services/registro.py                67      2    97%   119-123
+app/services/telemetria.py             256     18    93%   101, 103, 110, 142, 157, 183-184, 187-188, 192-193, 195, 200, 208, 214, 216, 513, 558
+app/services/websocket_manager.py       27      5    81%   20-21, 28-29, 32
 ------------------------------------------------------------------
-TOTAL                                 1037    103    90%
+TOTAL                                 1033     99    90%
 ```
 
 **Destaques de cobertura por módulo crítico:**
 
 | Módulo | Cobertura | Observação |
 |---|---|---|
-| `services/telemetria.py` | 92% | Lógica pura de indicadores |
+| `services/telemetria.py` | 93% | Lógica pura de indicadores |
 | `services/connection_monitor.py` | 100% | Monitoramento de conexão |
 | `routers/telemetria.py` | 96% | Endpoint de recepção |
 | `schemas/telemetria.py` | 100% | Modelos de dados |
