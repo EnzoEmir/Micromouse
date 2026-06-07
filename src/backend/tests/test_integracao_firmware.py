@@ -26,9 +26,6 @@ from app.models.labirinto import Labirinto
 from app.models.percurso import Percurso
 from app.models.evento import Evento
 from app.models.enums import StatusCorrida, TipoLabirinto
-from app.routers.telemetria import estados_ativos, _set_sessao_ativa_id
-import app.routers.telemetria as _tel_router
-from app.services.connection_monitor import connection_monitor
 
 
 # ======================================================================
