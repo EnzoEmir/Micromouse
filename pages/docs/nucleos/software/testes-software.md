@@ -141,6 +141,19 @@
 **Módulos cobertos:** `app/routers/labirinto.py`
 **HU relacionada:** US-17 (Melhor Resultado / Recorde)
 
+#### `test_integracao_firmware.py` — Integração Firmware ↔ Backend
+
+| Classe/Função | Casos | Descrição |
+|---|---|---|
+| `test_cenario_corridas_sequenciais` | 1 | Simula cenário realista com múltiplas corridas no mesmo banco (sucesso, falha, interrupções). |
+| `TestContratoTelemetriaMd` | 44 | Valida estritamente os campos e restrições dos pacotes de 0 a 5 com base no documento `telemetria.md`. |
+| `TestCenariosAdversos` | 6 | Verifica a resiliência a timestamps regressivos/negativos, baterias inválidas e pacotes sem sessão ativa. |
+| `TestBroadcastWebSocket` | 4 | Garante o envio correto dos eventos (`SESSAO_INICIADA`, `MOVIMENTACAO`, `HEARTBEAT`, etc.) via WebSocket. |
+| `TestDimensoesLabirinto` | 3 | Valida se as dimensões permitidas (4, 8, 16) mapeiam corretamente para os tipos de labirinto no banco. |
+
+**Módulos cobertos:** Integração ponta-a-ponta, validando contrato (`telemetria.md`), roteamento, persistência e websocket.
+**HU relacionada:** HU-08, HU-09, HU-10, HU-11, HU-14, HU-15, HU-16, HU-19, HU-20
+
 ---
 
 ## 3. Suítes de Testes do Frontend
@@ -323,10 +336,10 @@ npx vitest run src/__tests__/integration/
 
 ## 5. Resultados da Execução
 
-### 5.1 Backend — 151 testes (todos passando ✅)
+### 5.1 Backend — 209 testes (todos passando ✅)
 
 ```
-============================= 151 passed in 11.20s =============================
+============================= 209 passed in 16.31s =============================
 ```
 
 | Arquivo de Teste | Testes | Status |
@@ -339,7 +352,8 @@ npx vitest run src/__tests__/integration/
 | `test_telemetria.py` | 54 | ✅ Passed |
 | `test_telemetria_router.py` | 11 | ✅ Passed |
 | `test_websocket.py` | 3 | ✅ Passed |
-| **Total** | **151** | ✅ |
+| `test_integracao_firmware.py` | 58 | ✅ Passed |
+| **Total** | **209** | ✅ |
 
 ### 5.2 Frontend — 129 testes (todos passando ✅)
 
@@ -450,16 +464,17 @@ Os componentes não cobertos são primariamente visuais (`MazeViewer.tsx` — re
 
 | HU | Descrição | Testes Backend | Testes Frontend |
 |---|---|---|---|
-| US-04 | Recepção de telemetria via HTTP | `test_telemetria_router.py`, `test_websocket.py` | — |
+| US-04 | Recepção de telemetria via HTTP | `test_telemetria_router.py`, `test_websocket.py`, `test_integracao_firmware.py` | — |
 | US-05 | Indicadores de desempenho no dashboard | `test_telemetria.py` | `DashboardIndicadores.test.tsx`, `DashboardIndicadores.integration.test.tsx`, `formatarTempo.test.ts` |
-| US-06 | Persistência de dados de corrida | `test_persistencia.py` | — |
+| US-06 | Persistência de dados de corrida | `test_persistencia.py`, `test_integracao_firmware.py` | — |
 | US-07 | Alertas funcionais (bateria, parada) | `test_alertas_funcionais.py`, `test_telemetria.py` | `DashboardIndicadores.test.tsx` (CT03, CT04) |
-| US-09 | Monitoramento de conexão online/offline | `test_connection_monitor.py` | `DashboardIndicadores.integration.test.tsx` (CT06), `MonitoringLayout.test.tsx`, `Session.test.tsx` |
+| US-09 | Monitoramento de conexão online/offline | `test_connection_monitor.py`, `test_integracao_firmware.py` | `DashboardIndicadores.integration.test.tsx` (CT06), `MonitoringLayout.test.tsx`, `Session.test.tsx` |
 | US-10 | Heartbeat periódico | `test_novos_pacotes.py` (Heartbeat) | — |
 | US-11 | Alerta de temperatura crítica | `test_novos_pacotes.py` (AlertaTemperatura) | — |
 | US-12 | Consulta de corridas no banco | `test_persistencia.py` (TestSalvarCorrida) | `CorridaDashboard.integration.test.tsx`, `useCorrida.integration.test.tsx` |
 | US-13 | Visualização do labirinto (rastro) | — | `normalizePathToOrthogonal.test.ts`, `mazeUtils.test.ts` |
 | US-17 | Melhor resultado / recorde | `test_melhor_resultado.py` | `CardMelhorTempo.test.tsx`, `CardMelhorTempo.integration.test.tsx` |
+| US-20 | Comunicação com Micromouse | `test_integracao_firmware.py` | — |
 
 ---
 
@@ -522,6 +537,7 @@ src/
 │   │   ├── conftest.py                         # Fixtures compartilhadas
 │   │   ├── test_alertas_funcionais.py          # 3 testes
 │   │   ├── test_connection_monitor.py          # 17 testes
+│   │   ├── test_integracao_firmware.py         # 58 testes
 │   │   ├── test_melhor_resultado.py            # 7 testes
 │   │   ├── test_novos_pacotes.py               # 31 testes
 │   │   ├── test_persistencia.py                # 18 testes
@@ -553,7 +569,7 @@ src/
     └── vitest.config.ts
 ```
 
-**Total geral: 280 testes automatizados (151 backend + 129 frontend)**
+**Total geral: 338 testes automatizados (209 backend + 129 frontend)**
 
 # Histórico de Versão
 
