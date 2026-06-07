@@ -1,8 +1,9 @@
 # Testes do firmware Micromouse (host)
 
-Suíte de testes **unitários e de integração** que roda no PC (Windows), sem
-precisar do ESP32, do QEMU nem do ambiente ESP-IDF. Os arquivos `.cpp` reais do
-firmware são compilados com o MSVC (`cl.exe`) contra *mocks* das APIs do ESP-IDF.
+Suíte de testes **unitários, de integração e de sistema** que roda no PC
+(Windows), sem precisar do ESP32, do QEMU nem do ambiente ESP-IDF. Os arquivos
+`.cpp` reais do firmware são compilados com o MSVC (`cl.exe`) contra *mocks* das
+APIs do ESP-IDF.
 
 ## Como rodar
 
@@ -31,8 +32,19 @@ ambiente do compilador, compila cada alvo em `build/` e executa. Sai com código
 | `test_battery` | `main/battery` | unitário | `voltageToSOC` (extremos e saturação), contagem de Coulomb, correção por tensão em repouso, saturação 0–100 % e o filtro de média móvel + LPF. |
 | `test_motor` | `main/motor` | unitário | Lógica da ponte H (sentido para frente/ré/freio), saturação do duty em 1023, liberação do standby e leitura do encoder (PCNT). |
 | `test_telemetria` | `main/telemetria` | unitário + integração | *Gating* por Wi-Fi, timestamp relativo ao início, e o *heartbeat* de inatividade (limiar, reset por atividade, supressão sem Wi-Fi). |
+| `test_system` | `battery` + `maze` + `telemetria` + `envio_dados` | **sistema (E2E)** | Cadeia completa com os módulos **reais** ligados entre si (só Wi-Fi/HTTP/relógio/INA226 mockados): uma missão do robô gera o fluxo de telemetria que um *backend simulado* faz o *parse* a partir do JSON que cruzou a rede. Cobre missão completa (config→movimentos→rota→fim, timestamps monotônicos, descarga da bateria), fidelidade das paredes reportadas (sem fantasmas), gating por queda/reconexão de Wi-Fi, propagação e recuperação de falha de rede, *heartbeat* carregando o SOC atual, e alerta de temperatura no meio da corrida. |
 
-Total atual: **48 testes / 168 verificações**.
+Total atual: **54 testes / 230 verificações**.
+
+## Pirâmide de testes
+
+- **Unitário** — um módulo isolado contra mocks (`test_battery`, `test_motor`,
+  `test_envio_dados`, partes de `test_maze`/`test_telemetria`).
+- **Integração** — a máquina de estados do labirinto de ponta a ponta, ou a
+  telemetria sobre um `envio_dados` mockado (`test_maze`, `test_telemetria`).
+- **Sistema (E2E)** — os módulos **reais** do firmware compilados juntos, com
+  apenas as bordas de hardware/rede mockadas, validando o comportamento
+  observável no JSON que sai pela rede (`test_system`).
 
 ## Estrutura
 

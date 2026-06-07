@@ -69,7 +69,17 @@ $targets = @(
     @{ name = "test_telemetria";
        srcs = @("$here\test_telemetria.cpp", "$main\telemetria\telemetria.cpp", "$main\maze\maze.cpp",
                 "$mocks\mock_envio_dados.cpp", "$mocks\wifi_mock.cpp", "$mocks\esp_timer_mock.cpp");
-       incs = @($mocks, $main, "$main\maze", "$main\telemetria", "$main\envio_dados") }
+       incs = @($mocks, $main, "$main\maze", "$main\telemetria", "$main\envio_dados") },
+
+    # System (end-to-end) target: real maze + battery + telemetria + envio_dados
+    # wired together; only the hardware/network edges are mocked (Wi-Fi, HTTP,
+    # clock, INA226/I2C). Exercises a full mission through the JSON on the wire.
+    @{ name = "test_system";
+       srcs = @("$here\test_system.cpp", "$main\maze\maze.cpp", "$main\telemetria\telemetria.cpp",
+                "$main\envio_dados\envio_dados.cpp", "$main\battery\battery.cpp",
+                "$mocks\esp_http_client_mock.cpp", "$mocks\wifi_mock.cpp", "$mocks\esp_timer_mock.cpp",
+                "$mocks\ina226_mock.cpp", "$mocks\i2c_manager_mock.cpp", "$cjsonC");
+       incs = @($mocks, $main, "$main\maze", "$main\envio_dados", "$main\telemetria", "$main\battery", $cjsonDir) }
 )
 
 # --- Build + run loop -------------------------------------------------------
