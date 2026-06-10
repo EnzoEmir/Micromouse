@@ -97,16 +97,14 @@ const TIPOS: { value: TipoLabirintoFiltro; label: string }[] = [
 // ---------------------------------------------------------------------------
 
 type HistoricoCorridasPageProps = {
-  activeView: "telemetria" | "labirinto" | "corridas";
+  activeView: "telemetria" | "corridas";
   onNavigateTelemetria: () => void;
-  onNavigateLabirinto: () => void;
   onNavigateCorridas: () => void;
 };
 
 export function HistoricoCorridasPage({
   activeView,
   onNavigateTelemetria,
-  onNavigateLabirinto,
   onNavigateCorridas,
 }: HistoricoCorridasPageProps) {
   const [corridas, setCorridas] = useState<CorridaResumoResponse[]>([]);
@@ -170,7 +168,6 @@ export function HistoricoCorridasPage({
     <MonitoringLayout
       activeView={activeView}
       onNavigateTelemetria={onNavigateTelemetria}
-      onNavigateLabirinto={onNavigateLabirinto}
       onNavigateCorridas={onNavigateCorridas}
       eyebrow="Histórico"
       title="Análise de Performance"
