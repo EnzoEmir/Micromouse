@@ -145,14 +145,6 @@ export function MonitoringLayout({
             </div>
 
             <div className="flex items-center gap-3">
-              <div className="hidden md:block">
-                <input
-                  type="text"
-                  placeholder="Buscar evento, sessão..."
-                  className="h-9 w-64 rounded-lg border border-border bg-background px-3 text-sm text-primary outline-none transition placeholder:text-zinc-600 focus:border-primary"
-                />
-              </div>
-
               <div
                 role="status"
                 aria-live="polite"
@@ -166,17 +158,6 @@ export function MonitoringLayout({
                   }`}
                 />
                 {statusLabel}
-              </div>
-
-              <button
-                type="button"
-                className="flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-background text-sm text-zinc-400 hover:text-primary transition-colors"
-              >
-                🔔
-              </button>
-
-              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-xs font-semibold text-background cursor-pointer hover:opacity-80 transition-opacity">
-                AL
               </div>
             </div>
           </header>
