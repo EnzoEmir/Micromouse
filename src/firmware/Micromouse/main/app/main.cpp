@@ -21,6 +21,7 @@
 #include "vl53l0x/IV_Vl53l0x.hpp"
 #include "maze.hpp"
 #include "telemetria.hpp"
+#include "botoes/botoes.hpp"
 
 namespace {
 
@@ -70,6 +71,21 @@ SemaphoreHandle_t g_i2c_mutex = nullptr;   // serializa o barramento I2C
 Battery   g_battery;
 Labirinto g_labirinto;
 Telemetria g_telemetria(BACKEND_URL, 1500); // heartbeat de 1,5 s
+
+// Tamanhos de labirinto que o botao 2 cicla, em ordem. Comeca em 4x4.
+const Labirinto::Tamanho kTamanhos[] = {
+    Labirinto::Tamanho::k4x4,
+    Labirinto::Tamanho::k8x8,
+    Labirinto::Tamanho::k16x16,
+};
+constexpr int kNumTamanhos = sizeof(kTamanhos) / sizeof(kTamanhos[0]);
+int g_idx_tamanho = 0; // 4x4 por padrao
+
+// Sincronizacao botao <-> telemetria. A largada (1o clique do botao 1) escolhe
+// o tamanho; so entao a telemetria conecta o Wi-Fi e envia a config inicial
+// (tipo 0) com o tamanho correto e o relogio da corrida zerado no instante real.
+volatile bool g_largada_dada      = false; // navegacao -> telemetria
+volatile bool g_telemetria_pronta = false; // telemetria -> navegacao
 
 // Ordem de boot em cascata
 IV_Vl53l0x g_tof_f_left({
@@ -375,12 +391,18 @@ void battery_task(void*) {
 }
 
 void telemetria_task(void*) {
+    // Espera a largada (botao 1) para que o tamanho do labirinto ja esteja
+    // definido: a config inicial (tipo 0) sai com o tamanho escolhido e o
+    // relogio da corrida zera no instante real do inicio.
+    while (!g_largada_dada) vTaskDelay(pdMS_TO_TICKS(20));
+
     // Conecta ao Wi-Fi (bloqueante) e envia a configuracao inicial (tipo 0).
     int soc;
     portENTER_CRITICAL(&g_snap_mux);
     soc = g_snap_soc;
     portEXIT_CRITICAL(&g_snap_mux);
     g_telemetria.inicializar(WIFI_SSID, WIFI_PASS, g_labirinto, soc);
+    g_telemetria_pronta = true; // libera a navegacao para comecar a se mover
 
     const TickType_t delay = pdMS_TO_TICKS(500);
     while (true) {
@@ -409,13 +431,49 @@ void navegacao_task(void*) {
     robo.avancar   = []() { avancarUmaCelula(); };
     g_labirinto.configurarRobo(robo);
 
-    // Objetivo: uma celula do centro do labirinto. Largada em (0,0), heading N.
+    // Botoes de controle (D19 inicia, D23 cicla o tamanho).
+    Botao botao_start(BUTTON_START_PIN);
+    Botao botao_size(BUTTON_SIZE_PIN);
+    botao_start.init();
+    botao_size.init();
+
+    // Estado 1: aguarda
+    // Robo parado. O botao 2 (D23) cicla o tamanho do labirinto; o botao 1
+    // (D19) confirma a selecao e dá a largada do mapeamento.
+    motores_para();
+    {
+        const int t0 = (int)kTamanhos[g_idx_tamanho];
+        ESP_LOGI(TAG, "Aguardando largada. Botao2=tamanho (%dx%d). Botao1=mapear.", t0, t0);
+    }
+    while (!botao_start.clicado()) {
+        if (botao_size.clicado()) {
+            g_idx_tamanho = (g_idx_tamanho + 1) % kNumTamanhos;
+            const int t = (int)kTamanhos[g_idx_tamanho];
+            ESP_LOGI(TAG, "Tamanho selecionado: %dx%d", t, t);
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    // Aplica o tamanho escolhido e prepara o mapa. Objetivo: uma celula do
+    // centro do labirinto. Largada em (0,0), heading N.
+    g_labirinto.configurar(kTamanhos[g_idx_tamanho]);
     const uint8_t n = g_labirinto.tamanho();
     const uint8_t centro = (uint8_t)(n / 2 - 1);
     g_labirinto.iniciar({0, 0}, {centro, centro});
     g_pose = {0, 0, NORTE};
 
-    ESP_LOGI(TAG, "=== Iniciando navegacao path-focused (flood fill otimista) ===");
+    // Libera a telemetria para conectar o Wi-Fi e mandar a config (tipo 0) com o
+    // tamanho ja escolhido. Espera ela ficar pronta para que os pacotes de
+    // movimento saiam com o relogio da corrida valido — mas com teto de tempo
+    // para o robo nao ficar refem do Wi-Fi caso a conexao falhe.
+    g_largada_dada = true;
+    const int64_t t_espera_tel = esp_timer_get_time();
+    while (!g_telemetria_pronta &&
+           (esp_timer_get_time() - t_espera_tel) < 8000000) { // ate 8 s
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+
+    ESP_LOGI(TAG, "=== Iniciando mapeamento %ux%u (flood fill otimista) ===", n, n);
 
     // Referencias para estimar a velocidade media (pacote de fim de corrida).
     const int64_t t_corrida_us = esp_timer_get_time();
@@ -470,6 +528,16 @@ void navegacao_task(void*) {
                 Labirinto::Coordenada rota[Labirinto::kMaxCaminho];
                 const uint16_t nlen = g_labirinto.rotaOtima(rota, Labirinto::kMaxCaminho);
                 if (nlen > 0) g_telemetria.rota_otimizada(rota, nlen);
+                passos_bloqueado = 0;
+                break;
+            }
+            case Labirinto::Resultado::RetornouAoInicio: {
+                // Fim do mapeamento: robo volta pro início. CONGELA e espera o
+                // 2o clique do botao 1 para disparar a corrida otima (fast run).
+                ESP_LOGI(TAG, "*** Mapeamento concluido. Aguardando botao1 para a corrida otima. ***");
+                motores_para();
+                while (!botao_start.clicado()) vTaskDelay(pdMS_TO_TICKS(10));
+                ESP_LOGI(TAG, "*** Iniciando corrida otima. ***");
                 passos_bloqueado = 0;
                 break;
             }
@@ -668,7 +736,7 @@ extern "C" void app_main(void) {
     }
     motores_para();
 
-    g_labirinto.configurar(Labirinto::Tamanho::k16x16);
+    g_labirinto.configurar(Labirinto::Tamanho::k4x4); // padrao; o botao 2 ajusta
 
     ESP_LOGI(TAG, "Lancando tasks...");
     xTaskCreatePinnedToCore(battery_task,    "battery",    4096, nullptr, 3, nullptr, 1);
