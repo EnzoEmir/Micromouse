@@ -87,6 +87,10 @@ export interface UseTelemetriaReturn {
   /** Limpa a fila apos processar */
   limparFilaMovimentacoes: () => void;
   /**
+   * Indica ausência de sinal de telemetria por mais de 3 segundos.
+   */
+  alertaSemSinal: boolean;
+  /**
    * Contador incrementado a cada SESSAO_ENCERRADA com sucesso=true.
    * Componentes podem usar como dependência para disparar refetch.
    * (CA-17-02)
@@ -107,14 +111,20 @@ export function useTelemetria(
 ): UseTelemetriaReturn {
   const [indicadores, setIndicadores] = useState<IndicadoresDesempenho>(() => {
     const indicadoresSalvos = localStorage.getItem("indicadores");
-    return indicadoresSalvos ? JSON.parse(indicadoresSalvos) : ESTADO_INICIAL;
+    if (indicadoresSalvos) {
+      const parsed = JSON.parse(indicadoresSalvos);
+      if (parsed) return parsed;
+    }
+    return ESTADO_INICIAL;
   });
 
   const [configSessao, setConfigSessao] = useState<ConfigSessao>(() => {
     const configSessaoSalva = localStorage.getItem("configSessao");
-    return configSessaoSalva
-      ? JSON.parse(configSessaoSalva)
-      : CONFIG_SESSAO_INICIAL;
+    if (configSessaoSalva) {
+      const parsed = JSON.parse(configSessaoSalva);
+      if (parsed) return parsed;
+    }
+    return CONFIG_SESSAO_INICIAL;
   });
 
   const [conectado, setConectado] = useState(false);
@@ -130,6 +140,7 @@ export function useTelemetria(
     MovimentacaoTelemetria[]
   >([]);
   const [contadorNovoRecorde, setContadorNovoRecorde] = useState(0);
+  const [alertaSemSinal, setAlertaSemSinal] = useState(false);
 
   // Ref para manter o callback sempre atualizado sem recriar o WebSocket
   const onSessaoEncerradaRef = useRef(options?.onSessaoEncerradaComSucesso);
@@ -143,6 +154,24 @@ export function useTelemetria(
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const signalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Monitora ausência de sinal
+  useEffect(() => {
+    if (signalTimerRef.current) clearTimeout(signalTimerRef.current);
+    
+    if (alertaSemSinal) setAlertaSemSinal(false);
+
+    if (indicadores.status_corrida === "em_andamento") {
+      signalTimerRef.current = setTimeout(() => {
+        setAlertaSemSinal(true);
+      }, 3000);
+    }
+
+    return () => {
+      if (signalTimerRef.current) clearTimeout(signalTimerRef.current);
+    };
+  }, [indicadores.status_corrida, indicadores.ultimo_timestamp_ms, alertaSemSinal]);
 
   const decodificarParedes = useCallback((w: number): ParedesCelula => {
     return {
@@ -246,36 +275,41 @@ export function useTelemetria(
 
         if (msg.type === "SESSAO_INICIADA") {
           const pacote = msg.data as Record<string, unknown>;
-          const { dimensao, ...indicadoresData } = pacote;
-          setIndicadores(indicadoresData as IndicadoresDesempenho);
-          setConfigSessao({ dimensao } as ConfigSessao);
-          setStatusConexao("online");
-          setMensagemStatusConexao(null);
+          if (pacote) {
+            const { dimensao, ...indicadoresData } = pacote;
+            setIndicadores(indicadoresData as unknown as IndicadoresDesempenho);
+            setConfigSessao({ dimensao } as ConfigSessao);
+            setStatusConexao("online");
+            setMensagemStatusConexao(null);
+          }
         } else if (
           msg.type === "ATUALIZACAO_TELEMETRIA" ||
           msg.type === "HEARTBEAT"
         ) {
-          setIndicadores(msg.data as IndicadoresDesempenho);
-          setStatusConexao("online");
-          setMensagemStatusConexao(null);
+          if (msg.data) {
+            setIndicadores(msg.data as IndicadoresDesempenho);
+            setStatusConexao("online");
+            setMensagemStatusConexao(null);
+          }
         } else if (msg.type === "ALERTA_CRITICO") {
           // Alerta crítico genérico — dispara o modal de alerta
           // O componente TelemetryAlerts observa alerta_possivel_parada_inesperada
           // ou bateria crítica. Para o mock de teste, forçamos via estado.
-          setIndicadores((prev) => ({
-            ...prev,
-            alerta_possivel_parada_inesperada: true,
-          }));
+          setIndicadores((prev) => 
+            prev ? { ...prev, alerta_possivel_parada_inesperada: true } : prev
+          );
         } else if (msg.type === "ALERTA_TEMPERATURA_CRITICA") {
           const pacote = msg.data as Record<string, unknown>;
-          const { temp_c, ...indicadoresData } = pacote;
-          setIndicadores(indicadoresData as IndicadoresDesempenho);
-          setStatusConexao("online");
-          setMensagemStatusConexao(null);
-          toast.error(
-            `Alerta Crítico: Temperatura em ${temp_c}ºC! Corrida abortada.`,
-            { id: "alerta-temperatura", duration: 5000 },
-          );
+          if (pacote) {
+            const { temp_c, ...indicadoresData } = pacote;
+            setIndicadores(indicadoresData as unknown as IndicadoresDesempenho);
+            setStatusConexao("online");
+            setMensagemStatusConexao(null);
+            toast.error(
+              `Alerta Crítico: Temperatura em ${temp_c}ºC! Corrida abortada.`,
+              { id: "alerta-temperatura", duration: 5000 },
+            );
+          }
         }
       } catch (e) {
         console.error("[useTelemetria] Erro ao processar mensagem:", e);
@@ -378,6 +412,7 @@ export function useTelemetria(
     ultimaMovimentacao,
     filaMovimentacoes,
     limparFilaMovimentacoes,
+    alertaSemSinal,
     contadorNovoRecorde,
   };
 }

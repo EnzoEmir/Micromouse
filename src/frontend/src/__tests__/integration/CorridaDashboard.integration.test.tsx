@@ -55,7 +55,8 @@ describe("CorridasDashboard Integração", () => {
         data_hora_inicio: "2026-05-02T10:00:00Z",
         data_hora_fim: "2026-05-02T10:02:00Z",
         tipo_labirinto: "16X16" as const,
-        percurso: []
+        percurso: [],
+        celulas: []
       }
     };
 
