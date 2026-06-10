@@ -1,258 +1,341 @@
 #include "maze/maze.hpp"
 
 Labirinto::Labirinto()
-    : tamanho_(static_cast<uint8_t>(Tamanho::k16x16)),
-      chegada_{0, 0},
-      chegada_definida_(false) {
-    resetar();
+    : n_(static_cast<uint8_t>(Tamanho::k16x16)),
+      inicio_{0, 0},
+      objetivo_{0, 0},
+      pos_{0, 0},
+      heading_(Direcao::Norte),
+      fase_(Fase::ExplorarAteObjetivo),
+      alvoExploracao_(kInvalida),
+      sensoriou_(false),
+      posSensoriada_{0, 0},
+      robo_{} {
+    resetarMapa();
 }
 
 void Labirinto::configurar(Tamanho tamanho) {
-    tamanho_ = static_cast<uint8_t>(tamanho);
-    resetar();
+    n_ = static_cast<uint8_t>(tamanho);
+    resetarMapa();
 }
 
 uint8_t Labirinto::tamanho() const {
-    return tamanho_;
+    return n_;
 }
 
-bool Labirinto::dentroDosLimites(uint8_t x, uint8_t y) const {
-    return x < tamanho_ && y < tamanho_;
+void Labirinto::configurarRobo(const InterfaceRobo &robo) {
+    robo_ = robo;
 }
 
-const Labirinto::Celula &Labirinto::celula(uint8_t x, uint8_t y) const {
-    return grade_[y][x];
+void Labirinto::iniciar(Posicao inicio, Posicao objetivo) {
+    resetarMapa();
+    inicio_ = inicio;
+    objetivo_ = objetivo;
+    pos_ = inicio;
+    heading_ = Direcao::Norte;
+    fase_ = Fase::ExplorarAteObjetivo;
+    alvoExploracao_ = kInvalida;
+    sensoriou_ = false;
+    posSensoriada_ = inicio;
 }
 
-Labirinto::Celula &Labirinto::celula(uint8_t x, uint8_t y) {
-    return grade_[y][x];
-}
-
-void Labirinto::resetar() {
+void Labirinto::resetarMapa() {
     for (uint8_t y = 0; y < kMaxSize; ++y) {
         for (uint8_t x = 0; x < kMaxSize; ++x) {
-            grade_[y][x].walls = 0;
-            grade_[y][x].status = StatusCelula::Desconhecida;
-            grade_[y][x].distancia = kDistanciaInfinita;
+            mapa_[y][x] = 0;
+            dist_[y][x] = kDistanciaInfinita;
         }
     }
-    chegada_definida_ = false;
-    chegada_ = {0, 0};
 }
 
-void Labirinto::definirParede(uint8_t x, uint8_t y, Parede parede) {
-    if (!dentroDosLimites(x, y)) return;
-    grade_[y][x].walls |= static_cast<uint8_t>(parede);
-}
-
-bool Labirinto::temParede(uint8_t x, uint8_t y, Parede parede) const {
-    if (!dentroDosLimites(x, y)) return true;
-    return (grade_[y][x].walls & static_cast<uint8_t>(parede)) != 0;
-}
-
-void Labirinto::atualizarCelula(uint8_t x, uint8_t y, uint8_t paredes) {
-    if (!dentroDosLimites(x, y)) return;
-
-    Celula &atual = grade_[y][x];
-    atual.walls = paredes;
-    atual.status = StatusCelula::Visitada;
-
-    // Norte
-    if (paredes & ParedeNorte) {
-        definirParede(x, y + 1, ParedeSul);
-    } else if (dentroDosLimites(x, y + 1) && grade_[y + 1][x].status == StatusCelula::Desconhecida) {
-        grade_[y + 1][x].status = StatusCelula::Livre;
-    }
-
-    // Sul
-    if (paredes & ParedeSul) {
-        if (y > 0) definirParede(x, y - 1, ParedeNorte);
-    } else if (y > 0 && grade_[y - 1][x].status == StatusCelula::Desconhecida) {
-        grade_[y - 1][x].status = StatusCelula::Livre;
-    }
-
-    // Leste
-    if (paredes & ParedeLeste) {
-        definirParede(x + 1, y, ParedeOeste);
-    } else if (dentroDosLimites(x + 1, y) && grade_[y][x + 1].status == StatusCelula::Desconhecida) {
-        grade_[y][x + 1].status = StatusCelula::Livre;
-    }
-
-    // Oeste
-    if (paredes & ParedeOeste) {
-        if (x > 0) definirParede(x - 1, y, ParedeLeste);
-    } else if (x > 0 && grade_[y][x - 1].status == StatusCelula::Desconhecida) {
-        grade_[y][x - 1].status = StatusCelula::Livre;
+Labirinto::Direcao Labirinto::oposta(Direcao d) {
+    switch (d) {
+        case Direcao::Norte: return Direcao::Sul;
+        case Direcao::Sul:   return Direcao::Norte;
+        case Direcao::Leste: return Direcao::Oeste;
+        case Direcao::Oeste: return Direcao::Leste;
+        default:             return Direcao::Nenhuma;
     }
 }
 
-bool Labirinto::encontrarProximaFronteira(Coordenada *saida) const {
-    if (!saida) return false;
+Labirinto::Direcao Labirinto::girarCW(Direcao d) {
+    return static_cast<Direcao>((static_cast<uint8_t>(d) + 1) & 0x03);
+}
 
-    for (uint8_t y = 0; y < tamanho_; ++y) {
-        for (uint8_t x = 0; x < tamanho_; ++x) {
-            const Celula &c = grade_[y][x];
-            if (c.status == StatusCelula::Desconhecida) continue;
+Labirinto::Direcao Labirinto::girarCCW(Direcao d) {
+    return static_cast<Direcao>((static_cast<uint8_t>(d) + 3) & 0x03);
+}
 
-            const bool norte_desconhecido = dentroDosLimites(x, y + 1) &&
-                !temParede(x, y, ParedeNorte) &&
-                grade_[y + 1][x].status == StatusCelula::Desconhecida;
-            const bool sul_desconhecido = (y > 0) &&
-                !temParede(x, y, ParedeSul) &&
-                grade_[y - 1][x].status == StatusCelula::Desconhecida;
-            const bool leste_desconhecido = dentroDosLimites(x + 1, y) &&
-                !temParede(x, y, ParedeLeste) &&
-                grade_[y][x + 1].status == StatusCelula::Desconhecida;
-            const bool oeste_desconhecido = (x > 0) &&
-                !temParede(x, y, ParedeOeste) &&
-                grade_[y][x - 1].status == StatusCelula::Desconhecida;
+uint8_t Labirinto::bitDe(Direcao d) {
+    switch (d) {
+        case Direcao::Norte: return ParedeNorte;
+        case Direcao::Leste: return ParedeLeste;
+        case Direcao::Sul:   return ParedeSul;
+        case Direcao::Oeste: return ParedeOeste;
+        default:             return 0;
+    }
+}
 
-            if (norte_desconhecido || sul_desconhecido || leste_desconhecido || oeste_desconhecido) {
-                saida->x = x;
-                saida->y = y;
-                return true;
-            }
+Labirinto::Posicao Labirinto::vizinho(Posicao p, Direcao d) const {
+    switch (d) {
+        case Direcao::Norte: return {p.x, static_cast<uint8_t>(p.y + 1)};
+        case Direcao::Sul:   return {p.x, static_cast<uint8_t>(p.y - 1)};
+        case Direcao::Leste: return {static_cast<uint8_t>(p.x + 1), p.y};
+        case Direcao::Oeste: return {static_cast<uint8_t>(p.x - 1), p.y};
+        default:             return p;
+    }
+}
+
+bool Labirinto::dentroDosLimites(Posicao p) const {
+    return p.x < n_ && p.y < n_;
+}
+
+bool Labirinto::visitada(Posicao p) const {
+    if (!dentroDosLimites(p)) return false;
+    return (mapa_[p.y][p.x] & kBitVisitada) != 0;
+}
+
+uint8_t Labirinto::paredes(Posicao p) const {
+    if (!dentroDosLimites(p)) return 0;
+    return mapa_[p.y][p.x] & 0x0F;
+}
+
+uint16_t Labirinto::distancia(Posicao p) const {
+    if (!dentroDosLimites(p)) return kDistanciaInfinita;
+    return dist_[p.y][p.x];
+}
+
+void Labirinto::marcarVisitada(Posicao p) {
+    if (dentroDosLimites(p)) mapa_[p.y][p.x] |= kBitVisitada;
+}
+
+void Labirinto::definirParede(Posicao p, Direcao d) {
+    if (dentroDosLimites(p)) mapa_[p.y][p.x] |= bitDe(d);
+    const Posicao v = vizinho(p, d);
+    if (dentroDosLimites(v)) mapa_[v.y][v.x] |= bitDe(oposta(d));
+}
+
+bool Labirinto::temParede(Posicao p, Direcao d) const {
+    if (!dentroDosLimites(p)) return true;
+    if (!dentroDosLimites(vizinho(p, d))) return true;
+    return (mapa_[p.y][p.x] & bitDe(d)) != 0;
+}
+
+void Labirinto::atualizarParedes(Posicao p, const LeituraSensores &s) {
+    if (!dentroDosLimites(p)) return;
+    if (s.parede_frente)   definirParede(p, heading_);
+    if (s.parede_esquerda) definirParede(p, girarCCW(heading_));
+    if (s.parede_direita)  definirParede(p, girarCW(heading_));
+    marcarVisitada(p);
+}
+
+void Labirinto::floodFill(Posicao destino) {
+    for (uint8_t y = 0; y < kMaxSize; ++y) {
+        for (uint8_t x = 0; x < kMaxSize; ++x) {
+            dist_[y][x] = kDistanciaInfinita;
         }
     }
+    if (!dentroDosLimites(destino)) return;
 
-    return false;
-}
-
-bool Labirinto::definirChegada(uint8_t x, uint8_t y) {
-    // Meta 2x2 não pode encostar nos limites do labirinto.
-    if (x < 1 || y < 1) return false;
-    if (x + kTamanhoMeta > tamanho_ - 1) return false;
-    if (y + kTamanhoMeta > tamanho_ - 1) return false;
-
-    chegada_ = {x, y};
-    chegada_definida_ = true;
-    return true;
-}
-
-bool Labirinto::chegadaDefinida() const {
-    return chegada_definida_;
-}
-
-Labirinto::Coordenada Labirinto::posicaoChegada() const {
-    return chegada_;
-}
-
-bool Labirinto::estaNaChegada(uint8_t x, uint8_t y) const {
-    if (!chegada_definida_) return false;
-    return x >= chegada_.x && x < chegada_.x + kTamanhoMeta &&
-           y >= chegada_.y && y < chegada_.y + kTamanhoMeta;
-}
-
-void Labirinto::executarFloodFill() {
-    for (uint8_t y = 0; y < tamanho_; ++y) {
-        for (uint8_t x = 0; x < tamanho_; ++x) {
-            grade_[y][x].distancia = kDistanciaInfinita;
-        }
-    }
-
-    if (!chegada_definida_) return;
-
-    Coordenada fila[kMaxCaminho];
+    Posicao fila[kMaxCaminho];
     uint16_t head = 0;
     uint16_t tail = 0;
 
-    for (uint8_t dy = 0; dy < kTamanhoMeta; ++dy) {
-        for (uint8_t dx = 0; dx < kTamanhoMeta; ++dx) {
-            const uint8_t mx = chegada_.x + dx;
-            const uint8_t my = chegada_.y + dy;
-            if (!dentroDosLimites(mx, my)) continue;
-            grade_[my][mx].distancia = 0;
-            fila[tail++] = {mx, my};
-        }
-    }
+    dist_[destino.y][destino.x] = 0;
+    fila[tail++] = destino;
+
+    const Direcao dirs[4] = {Direcao::Norte, Direcao::Leste, Direcao::Sul, Direcao::Oeste};
 
     while (head < tail) {
-        const Coordenada atual = fila[head++];
-        const uint16_t prox_d = grade_[atual.y][atual.x].distancia + 1;
-
-        if (!temParede(atual.x, atual.y, ParedeNorte) &&
-            dentroDosLimites(atual.x, atual.y + 1) &&
-            grade_[atual.y + 1][atual.x].distancia > prox_d) {
-            grade_[atual.y + 1][atual.x].distancia = prox_d;
-            fila[tail++] = {atual.x, static_cast<uint8_t>(atual.y + 1)};
-        }
-        if (!temParede(atual.x, atual.y, ParedeSul) && atual.y > 0 &&
-            grade_[atual.y - 1][atual.x].distancia > prox_d) {
-            grade_[atual.y - 1][atual.x].distancia = prox_d;
-            fila[tail++] = {atual.x, static_cast<uint8_t>(atual.y - 1)};
-        }
-        if (!temParede(atual.x, atual.y, ParedeLeste) &&
-            dentroDosLimites(atual.x + 1, atual.y) &&
-            grade_[atual.y][atual.x + 1].distancia > prox_d) {
-            grade_[atual.y][atual.x + 1].distancia = prox_d;
-            fila[tail++] = {static_cast<uint8_t>(atual.x + 1), atual.y};
-        }
-        if (!temParede(atual.x, atual.y, ParedeOeste) && atual.x > 0 &&
-            grade_[atual.y][atual.x - 1].distancia > prox_d) {
-            grade_[atual.y][atual.x - 1].distancia = prox_d;
-            fila[tail++] = {static_cast<uint8_t>(atual.x - 1), atual.y};
+        const Posicao a = fila[head++];
+        const uint16_t nd = dist_[a.y][a.x] + 1;
+        for (uint8_t i = 0; i < 4; ++i) {
+            if (temParede(a, dirs[i])) continue;
+            const Posicao v = vizinho(a, dirs[i]);
+            if (dist_[v.y][v.x] > nd) {
+                dist_[v.y][v.x] = nd;
+                fila[tail++] = v;
+            }
         }
     }
 }
 
-bool Labirinto::melhorCaminho(Coordenada inicio,
-                              Coordenada *buffer,
-                              uint16_t capacidade,
-                              uint16_t *tamanho) const {
-    if (!buffer || !tamanho || capacidade == 0) return false;
-    *tamanho = 0;
+Labirinto::Direcao Labirinto::direcaoDeMenorDist(Posicao p) const {
+    if (!dentroDosLimites(p)) return Direcao::Nenhuma;
 
-    if (!chegada_definida_) return false;
-    if (!dentroDosLimites(inicio.x, inicio.y)) return false;
-    if (grade_[inicio.y][inicio.x].distancia == kDistanciaInfinita) return false;
+    const uint16_t atual = dist_[p.y][p.x];
+    const Direcao dirs[4] = {Direcao::Norte, Direcao::Leste, Direcao::Sul, Direcao::Oeste};
 
-    Coordenada atual = inicio;
+    uint16_t minD = atual;
+    for (uint8_t i = 0; i < 4; ++i) {
+        if (temParede(p, dirs[i])) continue;
+        const Posicao v = vizinho(p, dirs[i]);
+        if (dist_[v.y][v.x] < minD) minD = dist_[v.y][v.x];
+    }
+    if (minD >= atual) return Direcao::Nenhuma;
+
+    Direcao escolha = Direcao::Nenhuma;
+    for (uint8_t i = 0; i < 4; ++i) {
+        if (temParede(p, dirs[i])) continue;
+        const Posicao v = vizinho(p, dirs[i]);
+        if (dist_[v.y][v.x] != minD) continue;
+        if (dirs[i] == heading_) return dirs[i];
+        if (escolha == Direcao::Nenhuma) escolha = dirs[i];
+    }
+    return escolha;
+}
+
+Labirinto::Direcao Labirinto::proximaDirecaoFlood() const {
+    return direcaoDeMenorDist(pos_);
+}
+
+void Labirinto::coletarCaminhoOtimo(Posicao caminho[], uint8_t &n) const {
+    n = 0;
+    Posicao a = inicio_;
     while (true) {
-        if (*tamanho >= capacidade) return false;
-        buffer[(*tamanho)++] = atual;
-
-        if (grade_[atual.y][atual.x].distancia == 0) return true;
-
-        uint16_t melhor_d = grade_[atual.y][atual.x].distancia;
-        Coordenada melhor = atual;
-        bool achou = false;
-
-        if (!temParede(atual.x, atual.y, ParedeNorte) &&
-            dentroDosLimites(atual.x, atual.y + 1)) {
-            const uint16_t d = grade_[atual.y + 1][atual.x].distancia;
-            if (d < melhor_d) {
-                melhor_d = d;
-                melhor = {atual.x, static_cast<uint8_t>(atual.y + 1)};
-                achou = true;
-            }
-        }
-        if (!temParede(atual.x, atual.y, ParedeSul) && atual.y > 0) {
-            const uint16_t d = grade_[atual.y - 1][atual.x].distancia;
-            if (d < melhor_d) {
-                melhor_d = d;
-                melhor = {atual.x, static_cast<uint8_t>(atual.y - 1)};
-                achou = true;
-            }
-        }
-        if (!temParede(atual.x, atual.y, ParedeLeste) &&
-            dentroDosLimites(atual.x + 1, atual.y)) {
-            const uint16_t d = grade_[atual.y][atual.x + 1].distancia;
-            if (d < melhor_d) {
-                melhor_d = d;
-                melhor = {static_cast<uint8_t>(atual.x + 1), atual.y};
-                achou = true;
-            }
-        }
-        if (!temParede(atual.x, atual.y, ParedeOeste) && atual.x > 0) {
-            const uint16_t d = grade_[atual.y][atual.x - 1].distancia;
-            if (d < melhor_d) {
-                melhor_d = d;
-                melhor = {static_cast<uint8_t>(atual.x - 1), atual.y};
-                achou = true;
-            }
-        }
-
-        if (!achou) return false;
-        atual = melhor;
+        caminho[n++] = a;
+        if (a == objetivo_) return;
+        if (n >= kMaxSize * kMaxSize - 1) return;
+        const Direcao d = direcaoDeMenorDist(a);
+        if (d == Direcao::Nenhuma) return;
+        a = vizinho(a, d);
     }
 }
+
+bool Labirinto::caminhoTotalmenteConhecido() const {
+    Posicao caminho[kMaxSize * kMaxSize];
+    uint8_t n = 0;
+    coletarCaminhoOtimo(caminho, n);
+
+    if (n == 0) return false;
+    if (caminho[n - 1] != objetivo_) return false;
+    for (uint8_t i = 0; i < n; ++i) {
+        if (!visitada(caminho[i])) return false;
+    }
+    return true;
+}
+
+Labirinto::Posicao Labirinto::celulaIncertaMaisProxima() {
+    Posicao caminho[kMaxSize * kMaxSize];
+    uint8_t n = 0;
+    coletarCaminhoOtimo(caminho, n);
+
+    floodFill(pos_);
+
+    Posicao melhor = kInvalida;
+    uint16_t melhorD = kDistanciaInfinita;
+    for (uint8_t i = 0; i < n; ++i) {
+        const Posicao c = caminho[i];
+        if (visitada(c)) continue;
+        const uint16_t d = dist_[c.y][c.x];
+        if (d < melhorD) {
+            melhorD = d;
+            melhor = c;
+        }
+    }
+    return melhor;
+}
+
+uint16_t Labirinto::rotaOtima(Posicao *buffer, uint16_t capacidade) {
+    floodFill(objetivo_);
+    Posicao tmp[kMaxSize * kMaxSize];
+    uint8_t n = 0;
+    coletarCaminhoOtimo(tmp, n);
+    uint16_t out = 0;
+    for (uint8_t i = 0; i < n && out < capacidade; ++i) buffer[out++] = tmp[i];
+    return out;
+}
+
+void Labirinto::mover(Direcao d) {
+    if (robo_.virarPara) robo_.virarPara(d);
+    if (robo_.avancar)   robo_.avancar();
+    heading_ = d;
+    pos_ = vizinho(pos_, d);
+}
+
+Labirinto::Resultado Labirinto::passo(const LeituraSensores &s) {
+    sensoriou_ = false;
+
+    if (fase_ == Fase::ExplorarAteObjetivo || fase_ == Fase::RefinarCaminho) {
+        atualizarParedes(pos_, s);
+        sensoriou_ = true;
+        posSensoriada_ = pos_;
+    }
+
+    switch (fase_) {
+        case Fase::ExplorarAteObjetivo: {
+            floodFill(objetivo_);
+            if (pos_ == objetivo_) {
+                fase_ = Fase::RefinarCaminho;
+                alvoExploracao_ = kInvalida;
+                return Resultado::AlcancouObjetivo;
+            }
+            const Direcao d = proximaDirecaoFlood();
+            if (d == Direcao::Nenhuma) return Resultado::Bloqueado;
+            mover(d);
+            return Resultado::EmProgresso;
+        }
+
+        case Fase::RefinarCaminho: {
+            floodFill(objetivo_);
+            if (caminhoTotalmenteConhecido()) {
+                fase_ = Fase::RetornarAoInicio;
+                alvoExploracao_ = kInvalida;
+                return Resultado::CaminhoFechado;
+            }
+
+            if (alvoExploracao_ == kInvalida || pos_ == alvoExploracao_) {
+                alvoExploracao_ = celulaIncertaMaisProxima();
+            }
+            if (alvoExploracao_ == kInvalida) {
+                fase_ = Fase::RetornarAoInicio;
+                return Resultado::CaminhoFechado;
+            }
+
+            floodFill(alvoExploracao_);
+            const Direcao d = direcaoDeMenorDist(pos_);
+            if (d == Direcao::Nenhuma) {
+                alvoExploracao_ = kInvalida;
+                return Resultado::Bloqueado;
+            }
+            mover(d);
+            return Resultado::EmProgresso;
+        }
+
+        case Fase::RetornarAoInicio: {
+            floodFill(inicio_);
+            if (pos_ == inicio_) {
+                floodFill(objetivo_);
+                fase_ = Fase::FastRun;
+                return Resultado::RetornouAoInicio;
+            }
+            const Direcao d = direcaoDeMenorDist(pos_);
+            if (d == Direcao::Nenhuma) return Resultado::Bloqueado;
+            mover(d);
+            return Resultado::EmProgresso;
+        }
+
+        case Fase::FastRun: {
+            if (pos_ == objetivo_) {
+                fase_ = Fase::Concluido;
+                return Resultado::FastRunCompleto;
+            }
+            const Direcao d = direcaoDeMenorDist(pos_);
+            if (d == Direcao::Nenhuma) return Resultado::Bloqueado;
+            mover(d);
+            return Resultado::EmProgresso;
+        }
+
+        case Fase::Concluido:
+        default:
+            return Resultado::FastRunCompleto;
+    }
+}
+
+Labirinto::Fase Labirinto::fase() const { return fase_; }
+Labirinto::Posicao Labirinto::posicao() const { return pos_; }
+Labirinto::Direcao Labirinto::heading() const { return heading_; }
+Labirinto::Posicao Labirinto::objetivo() const { return objetivo_; }
+Labirinto::Posicao Labirinto::inicio() const { return inicio_; }
+bool Labirinto::sensoriou() const { return sensoriou_; }
+Labirinto::Posicao Labirinto::posicaoSensoriada() const { return posSensoriada_; }

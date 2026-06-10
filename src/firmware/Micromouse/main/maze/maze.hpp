@@ -1,12 +1,10 @@
 #pragma once
 
-#include <array>
 #include <cstdint>
 
 class Labirinto {
 public:
-    static constexpr uint8_t kMaxSize = 16;
-    static constexpr uint8_t kTamanhoMeta = 2;
+    static constexpr uint8_t  kMaxSize = 16;
     static constexpr uint16_t kDistanciaInfinita = 0xFFFF;
     static constexpr uint16_t kMaxCaminho = static_cast<uint16_t>(kMaxSize) * kMaxSize;
 
@@ -16,23 +14,33 @@ public:
         k16x16 = 16,
     };
 
-    enum class StatusCelula : uint8_t {
-        Desconhecida = 0,
-        Livre,
-        Visitada,
+    enum class Direcao : uint8_t {
+        Norte = 0,
+        Leste = 1,
+        Sul   = 2,
+        Oeste = 3,
+        Nenhuma = 255,
     };
 
-    struct Celula {
-        uint8_t walls;     // Bitmask de paredes (N=1, S=2, E=4, W=8)
-        StatusCelula status;
-        uint16_t distancia;
+    enum class Fase : uint8_t {
+        ExplorarAteObjetivo,  // desce o gradiente rumo ao centro
+        RefinarCaminho,       // verifica as celulas incertas sobre o caminho otimo
+        RetornarAoInicio,     // volta a largada pelo gradiente, sem explorar
+        FastRun,              // corrida rapida sobre o mapa fechado
+        Concluido,
     };
 
-    struct Coordenada {
-        uint8_t x;
-        uint8_t y;
+    // O que aconteceu no ultimo passo (para a telemetria reagir no firmware).
+    enum class Resultado : uint8_t {
+        EmProgresso,       // moveu-se uma celula normalmente
+        AlcancouObjetivo,  // acabou de chegar ao centro (fim de EXPLORAR)
+        CaminhoFechado,    // caminho otimo totalmente conhecido (fim de REFINAR)
+        RetornouAoInicio,  // de volta a largada (fim de RETORNAR)
+        FastRunCompleto,   // chegou ao centro na corrida rapida
+        Bloqueado,         // nao ha movimento possivel
     };
 
+    // Norte=1, Sul=2, Leste=4, Oeste=8.
     enum Parede : uint8_t {
         ParedeNorte = 1 << 0,
         ParedeSul   = 1 << 1,
@@ -40,48 +48,104 @@ public:
         ParedeOeste = 1 << 3,
     };
 
+    struct Posicao {
+        uint8_t x;
+        uint8_t y;
+        bool operator==(const Posicao &o) const { return x == o.x && y == o.y; }
+        bool operator!=(const Posicao &o) const { return !(*this == o); }
+    };
+
+    // Compatibilidade com os modulos de telemetria/envio_dados.
+    using Coordenada = Posicao;
+
+    struct LeituraSensores {
+        bool parede_frente;
+        bool parede_esquerda;
+        bool parede_direita;
+    };
+
+    struct InterfaceRobo {
+        void (*virarPara)(Direcao destino) = nullptr;
+        void (*avancar)() = nullptr;
+    };
+
+    static constexpr Posicao kInvalida = {0xFF, 0xFF};
+
     Labirinto();
 
     void configurar(Tamanho tamanho);
     uint8_t tamanho() const;
 
-    bool dentroDosLimites(uint8_t x, uint8_t y) const;
+    void configurarRobo(const InterfaceRobo &robo);
 
-    const Celula &celula(uint8_t x, uint8_t y) const;
-    Celula &celula(uint8_t x, uint8_t y);
+    // Define largada/objetivo e zera todo o estado de navegacao.
+    void iniciar(Posicao inicio, Posicao objetivo);
 
-    void resetar();
+    // Um passo da maquina de estados; chamar repetidamente ate FastRunCompleto.
+    Resultado passo(const LeituraSensores &s);
 
-    void atualizarCelula(uint8_t x, uint8_t y, uint8_t paredes);
+    Fase fase() const;
+    Posicao posicao() const;
+    Direcao heading() const;
+    Posicao objetivo() const;
+    Posicao inicio() const;
 
-    bool encontrarProximaFronteira(Coordenada *saida) const;
+    // Ultima celula sensoriada neste/no ultimo passo (para telemetria tipo 1).
+    bool sensoriou() const;
+    Posicao posicaoSensoriada() const;
 
-    // Meta 2x2: (x, y) é o canto inferior-esquerdo. Retorna false se a região
-    // 2x2 não caber sem encostar nos limites do labirinto.
-    bool definirChegada(uint8_t x, uint8_t y);
-    bool chegadaDefinida() const;
-    Coordenada posicaoChegada() const;
-    bool estaNaChegada(uint8_t x, uint8_t y) const;
+    // Acessos de leitura ao mapa.
+    bool dentroDosLimites(Posicao p) const;
+    bool visitada(Posicao p) const;
+    uint8_t paredes(Posicao p) const;     // somente os bits N/S/L/O
+    uint16_t distancia(Posicao p) const;  // do ultimo floodFill
 
-    // Preenche o campo distancia de cada célula com a distância (em células)
-    // até a chegada, respeitando paredes. Requer chegadaDefinida() == true.
-    void executarFloodFill();
+    // Conveniencia: refloda o objetivo e coleta a rota otima inicio->centro.
+    uint16_t rotaOtima(Posicao *buffer, uint16_t capacidade);
 
-    // Preenche buffer com o caminho de menor custo da célula inicial até
-    // uma célula da meta, seguindo o gradiente do flood fill. tamanho recebe
-    // a quantidade de coordenadas escritas. Retorna false se não houver
-    // caminho ou se o buffer for pequeno demais.
-    bool melhorCaminho(Coordenada inicio,
-                       Coordenada *buffer,
-                       uint16_t capacidade,
-                       uint16_t *tamanho) const;
+    // BFS reversa a partir de `destino`, respeitando SO paredes conhecidas.
+    void floodFill(Posicao destino);
+
+    Direcao proximaDirecaoFlood() const;
+
+    void coletarCaminhoOtimo(Posicao caminho[], uint8_t &n) const;
+
+    bool caminhoTotalmenteConhecido() const;
+
+    Posicao celulaIncertaMaisProxima();
+
+    void atualizarParedes(Posicao p, const LeituraSensores &s);
+    bool temParede(Posicao p, Direcao d) const;
+    Posicao vizinho(Posicao p, Direcao d) const;
+
+    Direcao direcaoDeMenorDist(Posicao p) const;
 
 private:
-    uint8_t tamanho_;
-    std::array<std::array<Celula, kMaxSize>, kMaxSize> grade_;
-    Coordenada chegada_;
-    bool chegada_definida_;
+    static constexpr uint8_t kBitVisitada = 1 << 4;
 
-    void definirParede(uint8_t x, uint8_t y, Parede parede);
-    bool temParede(uint8_t x, uint8_t y, Parede parede) const;
+    uint8_t  n_;                              // lado efetivo do labirinto
+    uint8_t  mapa_[kMaxSize][kMaxSize];       // bits de parede + bit de visitada
+    uint16_t dist_[kMaxSize][kMaxSize];       // distancias do ultimo floodFill
+
+    Posicao inicio_;
+    Posicao objetivo_;
+    Posicao pos_;
+    Direcao heading_;
+    Fase    fase_;
+    Posicao alvoExploracao_;                  // alvo temporario da fase REFINAR
+
+    bool    sensoriou_;
+    Posicao posSensoriada_;
+
+    InterfaceRobo robo_;
+
+    void resetarMapa();
+    void definirParede(Posicao p, Direcao d);
+    void marcarVisitada(Posicao p);
+    void mover(Direcao d);
+
+    static Direcao oposta(Direcao d);
+    static Direcao girarCW(Direcao d);
+    static Direcao girarCCW(Direcao d);
+    static uint8_t bitDe(Direcao d);
 };
