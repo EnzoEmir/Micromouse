@@ -425,7 +425,7 @@ float IV_Vl53l0x::readDistanceMm() {
     // Aguarda o hardware confirmar o início (bit 0 limpa quando a medição começa)
     int timeout = 100;
     while (readReg8(Reg::SYSRANGE_START) & 0x01) {
-        vTaskDelay(1); // 1 tick real (~10ms) — pdMS_TO_TICKS(1) resulta em 0 com tick=100Hz
+        vTaskDelay(1); // 1 tick = 1 ms (CONFIG_FREERTOS_HZ=1000)
         if (--timeout == 0) {
             logger_.warn("Timeout ao iniciar medição");
             return -1.0f;
@@ -435,7 +435,7 @@ float IV_Vl53l0x::readDistanceMm() {
     // Aguarda dado pronto (≈ timing_budget_ms)
     timeout = 500;
     while ((readReg8(Reg::RESULT_INTERRUPT_STATUS) & 0x07) == 0) {
-        vTaskDelay(1); // 1 tick real
+        vTaskDelay(1); // 1 tick = 1 ms
         if (--timeout == 0) {
             logger_.warn("Timeout aguardando resultado");
             return -1.0f;

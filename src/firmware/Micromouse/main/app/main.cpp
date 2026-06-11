@@ -1,6 +1,7 @@
 //  ATENCAO: as constantes marcadas com "CALIBRAR" dependem da geometria fisica
 //  do robo e PRECISAM ser ajustadas/medidas no hardware antes da primeira corrida.
 
+#include <atomic>
 #include <cstdio>
 #include <cmath>
 
@@ -13,6 +14,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "freertos/queue.h"
 
 #include "pins.hpp"
 #include "i2c_manager.hpp"
@@ -84,8 +86,22 @@ int g_idx_tamanho = 0; // 4x4 por padrao
 // Sincronizacao botao <-> telemetria. A largada (1o clique do botao 1) escolhe
 // o tamanho; so entao a telemetria conecta o Wi-Fi e envia a config inicial
 // (tipo 0) com o tamanho correto e o relogio da corrida zerado no instante real.
-volatile bool g_largada_dada      = false; // navegacao -> telemetria
-volatile bool g_telemetria_pronta = false; // telemetria -> navegacao
+std::atomic<bool> g_largada_dada{false};      // navegacao -> telemetria
+std::atomic<bool> g_telemetria_pronta{false}; // telemetria -> navegacao
+
+// Eventos de telemetria: a navegacao enfileira, a telemetria_task faz o HTTP.
+struct EventoTelemetria {
+    enum class Tipo : uint8_t { Movimento, Rota, FimCorrida, AlertaTemperatura };
+    Tipo tipo;
+    union {
+        struct { uint8_t x, y, paredes; } mov;
+        struct { uint16_t n; Labirinto::Coordenada pontos[Labirinto::kMaxCaminho]; } rota;
+        struct { bool sucesso; float v_med; int bateria; } fim;
+        struct { float temp_c; } alerta;
+    };
+};
+constexpr int kFilaTelemetriaLen = 12;
+QueueHandle_t g_fila_telemetria = nullptr;
 
 // Ordem de boot em cascata
 IV_Vl53l0x g_tof_f_left({
@@ -144,17 +160,9 @@ Pose g_pose;
 const int8_t kHeadingDx[4] = {0, +1, 0, -1};
 const int8_t kHeadingDy[4] = {+1, 0, -1, 0};
 
-// Snapshots para a telemetria (rodando em outra task).
-portMUX_TYPE g_snap_mux = portMUX_INITIALIZER_UNLOCKED;
-int   g_snap_soc        = 100;
-float g_snap_temp       = 0.0f;
-
-void atualizarSnapshot(int soc, float temp) {
-    portENTER_CRITICAL(&g_snap_mux);
-    g_snap_soc  = soc;
-    g_snap_temp = temp;
-    portEXIT_CRITICAL(&g_snap_mux);
-}
+// Snapshots compartilhados entre tasks (um unico escritor por campo).
+std::atomic<int>   g_snap_soc{100};
+std::atomic<float> g_snap_temp{0.0f};
 
 const char* nomeDirecao(Heading h) {
     switch (h) {
@@ -219,30 +227,36 @@ struct LeituraToF {
     float direita;
 };
 
-LeituraToF lerToFs() {
-    LeituraToF l = {9999.0f, 9999.0f, 9999.0f};
+// Le um ToF segurando o mutex I2C so durante a medicao.
+float lerUmToF(IV_Vl53l0x& tof) {
     if (xSemaphoreTake(g_i2c_mutex, pdMS_TO_TICKS(150)) != pdTRUE) {
-        ESP_LOGW(TAG, "lerToFs(): perdeu a vez no I2C");
-        return l;
+        ESP_LOGW(TAG, "lerUmToF(%s): perdeu a vez no I2C", tof.positionName().data());
+        return 9999.0f;
     }
-    l.frente   = g_tof_front.readDistanceMm();
-    l.esquerda = g_tof_left.readDistanceMm();
-    l.direita  = g_tof_right.readDistanceMm();
+    const float mm = tof.readDistanceMm();
     xSemaphoreGive(g_i2c_mutex);
+    return mm;
+}
+
+LeituraToF lerToFs() {
+    LeituraToF l;
+    l.frente   = lerUmToF(g_tof_front);
+    l.esquerda = lerUmToF(g_tof_left);
+    l.direita  = lerUmToF(g_tof_right);
     return l;
 }
 
-// Le o gyro_z (rad/s) ja sem o bias de calibracao. Retorna 0 se falhar.
-float lerGyroZ(float* temp_out) {
-    float gz = 0.0f;
-    if (xSemaphoreTake(g_i2c_mutex, pdMS_TO_TICKS(50)) != pdTRUE) return 0.0f;
-    if (imu_update()) {
+// Le o gyro_z (rad/s) ja sem o bias de calibracao. Retorna false se falhar.
+bool lerGyroZ(float* gz_out, float* temp_out) {
+    if (xSemaphoreTake(g_i2c_mutex, pdMS_TO_TICKS(50)) != pdTRUE) return false;
+    const bool ok = imu_update();
+    if (ok) {
         const DadosIMU d = imu_get_dados();
-        gz = d.gyro_z;
+        if (gz_out)   *gz_out   = d.gyro_z;
         if (temp_out) *temp_out = d.temperatura;
     }
     xSemaphoreGive(g_i2c_mutex);
-    return gz;
+    return ok;
 }
 
 //  Fusao sensorial: estimador de rumo (heading)
@@ -271,8 +285,8 @@ float heading_update() {
     s_head_t_prev = now;
 
     // Incremento pelo gyro (rad).
-    const float gz = lerGyroZ(nullptr);
-    const float dth_gyro = gz * dt;
+    float gz = 0.0f;
+    const bool gyro_ok = lerGyroZ(&gz, nullptr);
 
     // Incremento pelo encoder diferencial (rad).
     const int32_t dl = s_enc_total_l - s_head_last_l;
@@ -281,8 +295,13 @@ float heading_update() {
     s_head_last_r = s_enc_total_r;
     const float dth_enc = (float)(dr - dl) * METERS_PER_COUNT / TRACK_WIDTH_M;
 
-    // Filtro complementar: gyro domina o curto prazo, encoder ancora a deriva.
-    g_heading_rad += HEADING_ALPHA * dth_gyro + (1.0f - HEADING_ALPHA) * dth_enc;
+    if (gyro_ok) {
+        // Filtro complementar: gyro domina o curto prazo, encoder ancora a deriva.
+        g_heading_rad += HEADING_ALPHA * (gz * dt) + (1.0f - HEADING_ALPHA) * dth_enc;
+    } else {
+        // Sem gyro neste intervalo: usa so o encoder (integrar zero passaria do ponto).
+        g_heading_rad += dth_enc;
+    }
     return g_heading_rad;
 }
 
@@ -344,10 +363,10 @@ void avancarUmaCelula() {
         const int32_t avg = (s_enc_total_l + s_enc_total_r) / 2;
         if (avg >= COUNTS_PER_CELL) break;
 
-        // Seguranca: parede colada na frente.
-        const LeituraToF tof = lerToFs();
-        if (tof.frente > 0.0f && tof.frente < FRONT_STOP_MM) {
-            ESP_LOGW(TAG, "avancar(): parede a %.0f mm, parando", tof.frente);
+        // Seguranca: parede colada na frente (so o ToF frontal importa aqui).
+        const float frente = lerUmToF(g_tof_front);
+        if (frente > 0.0f && frente < FRONT_STOP_MM) {
+            ESP_LOGW(TAG, "avancar(): parede a %.0f mm, parando", frente);
             break;
         }
 
@@ -374,6 +393,45 @@ void avancarUmaCelula() {
     g_pose.y = (uint8_t)(g_pose.y + kHeadingDy[g_pose.heading]);
 }
 
+//  Eventos de telemetria
+
+// Nao bloqueia: se a fila encher, descarta o evento.
+void postarEvento(const EventoTelemetria& ev) {
+    if (g_fila_telemetria == nullptr) return;
+    if (xQueueSend(g_fila_telemetria, &ev, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "Fila de telemetria cheia; evento tipo %d descartado",
+                 (int)ev.tipo);
+    }
+}
+
+void postarMovimento(uint8_t x, uint8_t y, uint8_t paredes) {
+    EventoTelemetria ev;
+    ev.tipo = EventoTelemetria::Tipo::Movimento;
+    ev.mov  = {x, y, paredes};
+    postarEvento(ev);
+}
+
+void postarRotaOtima() {
+    EventoTelemetria ev;
+    ev.tipo   = EventoTelemetria::Tipo::Rota;
+    ev.rota.n = g_labirinto.rotaOtima(ev.rota.pontos, Labirinto::kMaxCaminho);
+    if (ev.rota.n > 0) postarEvento(ev);
+}
+
+void postarFimCorrida(bool sucesso, float v_med) {
+    EventoTelemetria ev;
+    ev.tipo = EventoTelemetria::Tipo::FimCorrida;
+    ev.fim  = {sucesso, v_med, g_snap_soc.load()};
+    postarEvento(ev);
+}
+
+void postarAlertaTemperatura(float temp_c) {
+    EventoTelemetria ev;
+    ev.tipo   = EventoTelemetria::Tipo::AlertaTemperatura;
+    ev.alerta = {temp_c};
+    postarEvento(ev);
+}
+
 //  Tasks paralelas (bateria + telemetria)
 void battery_task(void*) {
     const TickType_t delay = pdMS_TO_TICKS(500);
@@ -382,10 +440,7 @@ void battery_task(void*) {
             g_battery.update();
             xSemaphoreGive(g_i2c_mutex);
         }
-        const int soc = (int)g_battery.getSOC();
-        portENTER_CRITICAL(&g_snap_mux);
-        g_snap_soc = soc;
-        portEXIT_CRITICAL(&g_snap_mux);
+        g_snap_soc = (int)g_battery.getSOC();
         vTaskDelay(delay);
     }
 }
@@ -397,20 +452,31 @@ void telemetria_task(void*) {
     while (!g_largada_dada) vTaskDelay(pdMS_TO_TICKS(20));
 
     // Conecta ao Wi-Fi (bloqueante) e envia a configuracao inicial (tipo 0).
-    int soc;
-    portENTER_CRITICAL(&g_snap_mux);
-    soc = g_snap_soc;
-    portEXIT_CRITICAL(&g_snap_mux);
-    g_telemetria.inicializar(WIFI_SSID, WIFI_PASS, g_labirinto, soc);
+    g_telemetria.inicializar(WIFI_SSID, WIFI_PASS, g_labirinto, g_snap_soc.load());
     g_telemetria_pronta = true; // libera a navegacao para comecar a se mover
 
-    const TickType_t delay = pdMS_TO_TICKS(500);
+    // Unica task que faz HTTP; heartbeat (tipo 4) nos intervalos ociosos.
+    EventoTelemetria ev;
     while (true) {
-        portENTER_CRITICAL(&g_snap_mux);
-        soc = g_snap_soc;
-        portEXIT_CRITICAL(&g_snap_mux);
-        g_telemetria.verificar_heartbeat(soc);
-        vTaskDelay(delay);
+        if (xQueueReceive(g_fila_telemetria, &ev, pdMS_TO_TICKS(250)) == pdTRUE) {
+            switch (ev.tipo) {
+                case EventoTelemetria::Tipo::Movimento:
+                    g_telemetria.movimento(ev.mov.x, ev.mov.y, ev.mov.paredes);
+                    break;
+                case EventoTelemetria::Tipo::Rota:
+                    g_telemetria.rota_otimizada(ev.rota.pontos, ev.rota.n);
+                    break;
+                case EventoTelemetria::Tipo::FimCorrida:
+                    g_telemetria.fim_corrida(ev.fim.sucesso, ev.fim.v_med,
+                                             ev.fim.bateria);
+                    break;
+                case EventoTelemetria::Tipo::AlertaTemperatura:
+                    g_telemetria.alerta_temperatura(ev.alerta.temp_c);
+                    break;
+            }
+        } else {
+            g_telemetria.verificar_heartbeat(g_snap_soc.load());
+        }
     }
 }
 
@@ -502,7 +568,7 @@ void navegacao_task(void*) {
         if (g_labirinto.sensoriou()) {
             const Labirinto::Posicao ps = g_labirinto.posicaoSensoriada();
             const uint8_t w = g_labirinto.paredes(ps);
-            g_telemetria.movimento(ps.x, ps.y, w);
+            postarMovimento(ps.x, ps.y, w);
             ESP_LOGI(TAG, "Celula (%u,%u) head=%s | F:%.0f E:%.0f D:%.0f | walls=0x%X",
                      ps.x, ps.y, nomeDirecao(g_pose.heading),
                      tof.frente, tof.esquerda, tof.direita, w);
@@ -510,13 +576,14 @@ void navegacao_task(void*) {
         if (r == Labirinto::Resultado::EmProgresso) ++avancos;
 
         // 4. Monitoramento de temperatura do IMU (alerta tipo 5).
-        float temp = g_snap_temp;
-        lerGyroZ(&temp);
-        atualizarSnapshot(g_snap_soc, temp);
+        float temp = g_snap_temp.load();
+        float gz_ignorado;
+        lerGyroZ(&gz_ignorado, &temp);
+        g_snap_temp = temp;
         if (temp >= TEMP_CRITICA_C) {
             ESP_LOGE(TAG, "Temperatura critica: %.1f C. Abortando corrida.", temp);
             motores_para();
-            g_telemetria.alerta_temperatura(temp);
+            postarAlertaTemperatura(temp);
             break;
         }
 
@@ -525,9 +592,7 @@ void navegacao_task(void*) {
             case Labirinto::Resultado::AlcancouObjetivo: {
                 ESP_LOGI(TAG, "*** Centro alcancado. Refinando o caminho otimo... ***");
                 // Telemetria (tipo 2): rota otima atual de (0,0) ate o centro.
-                Labirinto::Coordenada rota[Labirinto::kMaxCaminho];
-                const uint16_t nlen = g_labirinto.rotaOtima(rota, Labirinto::kMaxCaminho);
-                if (nlen > 0) g_telemetria.rota_otimizada(rota, nlen);
+                postarRotaOtima();
                 passos_bloqueado = 0;
                 break;
             }
@@ -545,11 +610,9 @@ void navegacao_task(void*) {
                 ESP_LOGI(TAG, "*** Fast run concluida. ***");
                 motores_para();
                 // Telemetria (tipo 2): rota otima verificada (mapa fechado).
-                Labirinto::Coordenada rota[Labirinto::kMaxCaminho];
-                const uint16_t nlen = g_labirinto.rotaOtima(rota, Labirinto::kMaxCaminho);
-                if (nlen > 0) g_telemetria.rota_otimizada(rota, nlen);
+                postarRotaOtima();
                 // Telemetria (tipo 3): fim de corrida com sucesso.
-                g_telemetria.fim_corrida(true, velocidade_media(), g_snap_soc);
+                postarFimCorrida(true, velocidade_media());
                 terminar = true;
                 break;
             }
@@ -560,7 +623,7 @@ void navegacao_task(void*) {
                     const Labirinto::Posicao p = g_labirinto.posicao();
                     ESP_LOGW(TAG, "Bloqueado em (%u,%u). Encerrando sem sucesso.", p.x, p.y);
                     motores_para();
-                    g_telemetria.fim_corrida(false, velocidade_media(), g_snap_soc);
+                    postarFimCorrida(false, velocidade_media());
                     terminar = true;
                 }
                 break;
@@ -726,6 +789,12 @@ extern "C" void app_main(void) {
         return;
     }
 
+    g_fila_telemetria = xQueueCreate(kFilaTelemetriaLen, sizeof(EventoTelemetria));
+    if (g_fila_telemetria == nullptr) {
+        ESP_LOGE(TAG, "Falha ao criar a fila de telemetria");
+        return;
+    }
+
     if (!initSensores()) {
         ESP_LOGE(TAG, "Erro fatal na inicializacao dos sensores");
         return;
@@ -739,10 +808,10 @@ extern "C" void app_main(void) {
     g_labirinto.configurar(Labirinto::Tamanho::k4x4); // padrao; o botao 2 ajusta
 
     ESP_LOGI(TAG, "Lancando tasks...");
-    xTaskCreatePinnedToCore(battery_task,    "battery",    4096, nullptr, 3, nullptr, 1);
-    xTaskCreatePinnedToCore(telemetria_task, "telemetria", 8192, nullptr, 2, nullptr, 1);
-    // A navegacao roda no core 0, separada das tasks de I/O do core 1.
-    xTaskCreatePinnedToCore(navegacao_task,  "navegacao",  8192, nullptr, 5, nullptr, 0);
+    // Wi-Fi/lwIP, bateria e telemetria no core 0; navegacao sozinha no core 1.
+    xTaskCreatePinnedToCore(battery_task,    "battery",    4096, nullptr, 2, nullptr, 0);
+    xTaskCreatePinnedToCore(telemetria_task, "telemetria", 8192, nullptr, 3, nullptr, 0);
+    xTaskCreatePinnedToCore(navegacao_task,  "navegacao",  8192, nullptr, 10, nullptr, 1);
 
     ESP_LOGI(TAG, "=== Sistema pronto ===");
 }

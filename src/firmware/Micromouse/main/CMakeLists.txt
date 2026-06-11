@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS
-        # "app/main.cpp"
-        "app/teste_conexao_web.cpp"
+        "app/main.cpp"
+        # "app/teste_conexao_web.cpp"
         "i2c_manager.cpp"
         "battery/battery.cpp"
         "motor/motor.cpp"
