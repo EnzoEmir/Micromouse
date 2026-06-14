@@ -6,8 +6,8 @@ describe("MonitoringLayout", () => {
   const defaultProps = {
     activeView: "telemetria" as const,
     onNavigateTelemetria: vi.fn(),
-    onNavigateLabirinto: vi.fn(),
     onNavigateCorridas: vi.fn(),
+    onNavigateEstados: vi.fn(),
     eyebrow: "Monitoring",
     title: "Dashboard",
     description: "System overview",
@@ -49,25 +49,21 @@ describe("MonitoringLayout", () => {
   });
 
   it("chama funcoes de navegacao", () => {
-    const onNavLabirinto = vi.fn();
     const onNavTelemetria = vi.fn();
     const onNavCorridas = vi.fn();
+    const onNavEstados = vi.fn();
 
     render(
       <MonitoringLayout 
         {...defaultProps} 
-        onNavigateLabirinto={onNavLabirinto}
         onNavigateTelemetria={onNavTelemetria}
         onNavigateCorridas={onNavCorridas}
+        onNavigateEstados={onNavEstados}
       >
         <div />
       </MonitoringLayout>
     );
     
-    const labirintoBtn = screen.getByTitle("Labirinto");
-    fireEvent.click(labirintoBtn);
-    expect(onNavLabirinto).toHaveBeenCalled();
-
     const corridasBtn = screen.getByTitle("Histórico");
     fireEvent.click(corridasBtn);
     expect(onNavCorridas).toHaveBeenCalled();
@@ -75,6 +71,10 @@ describe("MonitoringLayout", () => {
     const telemetriaBtn = screen.getByTitle("Monitoramento");
     fireEvent.click(telemetriaBtn);
     expect(onNavTelemetria).toHaveBeenCalled();
+
+    const estadosBtn = screen.getByRole("button", { name: /Estados/ });
+    fireEvent.click(estadosBtn);
+    expect(onNavEstados).toHaveBeenCalled();
   });
 
   it("alterna colapso do menu", () => {
