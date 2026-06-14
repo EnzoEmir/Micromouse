@@ -100,12 +100,14 @@ type HistoricoCorridasPageProps = {
   activeView: "telemetria" | "corridas";
   onNavigateTelemetria: () => void;
   onNavigateCorridas: () => void;
+  onNavigateEstados: () => void;
 };
 
 export function HistoricoCorridasPage({
   activeView,
   onNavigateTelemetria,
   onNavigateCorridas,
+  onNavigateEstados,
 }: HistoricoCorridasPageProps) {
   const [corridas, setCorridas] = useState<CorridaResumoResponse[]>([]);
   const [loading, setLoading] = useState(true);
@@ -169,6 +171,7 @@ export function HistoricoCorridasPage({
       activeView={activeView}
       onNavigateTelemetria={onNavigateTelemetria}
       onNavigateCorridas={onNavigateCorridas}
+      onNavigateEstados={onNavigateEstados}
       eyebrow="Histórico"
       title="Análise de Performance"
       description="Visualize o desempenho histórico do robô e identifique padrões de navegação e recordes."

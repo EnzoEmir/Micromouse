@@ -8,12 +8,14 @@ type TelemetriaPageProps = {
   activeView: "telemetria" | "corridas";
   onNavigateTelemetria: () => void;
   onNavigateCorridas: () => void;
+  onNavigateEstados: () => void;
 };
 
 export function TelemetriaPage({
   activeView,
   onNavigateTelemetria,
   onNavigateCorridas,
+  onNavigateEstados,
 }: TelemetriaPageProps) {
   const telemetria = useTelemetria();
 
@@ -22,6 +24,7 @@ export function TelemetriaPage({
       activeView={activeView}
       onNavigateTelemetria={onNavigateTelemetria}
       onNavigateCorridas={onNavigateCorridas}
+      onNavigateEstados={onNavigateEstados}
       eyebrow="Monitoramento"
       title="Mapa em Tempo Real"
       description="Visualize a exploração do labirinto, paredes detectadas e o rastro de movimentação do robô."
