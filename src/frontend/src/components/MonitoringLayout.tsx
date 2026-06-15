@@ -1,10 +1,9 @@
 import React, { useState } from "react";
 
 type MonitoringLayoutProps = {
-  activeView: "telemetria" | "corridas" | "estados";
+  activeView: "telemetria" | "corridas";
   onNavigateTelemetria: () => void;
   onNavigateCorridas: () => void;
-  onNavigateEstados: () => void;
   eyebrow: string;
   title: string;
   description: string;
@@ -17,7 +16,6 @@ export function MonitoringLayout({
   activeView,
   onNavigateTelemetria,
   onNavigateCorridas,
-  onNavigateEstados,
   eyebrow,
   title,
   description,
@@ -115,24 +113,6 @@ export function MonitoringLayout({
               <span className="shrink-0 text-lg">↺</span>
               {!isCollapsed && <span className="whitespace-nowrap">Histórico</span>}
             </button>
-
-            <button
-              type="button"
-              onClick={onNavigateEstados}
-              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition cursor-pointer ${
-                activeView === "estados"
-                  ? "bg-zinc-950 text-white"
-                  : "text-zinc-300 hover:bg-zinc-800"
-              }`}
-            >
-              <span className="shrink-0 text-lg">▣</span>
-              {!isCollapsed && (
-                <span className="whitespace-nowrap">
-                  Estados
-                </span>
-              )}
-            </button>
-
           </nav>
 
           {!isCollapsed ? (
