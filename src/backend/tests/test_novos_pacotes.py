@@ -95,6 +95,11 @@ class TestProcessarHeartbeat:
         e = atualizar_indicadores(e, PACOTE_HEARTBEAT)
         assert e.bateria_atual == 93
 
+    def test_heartbeat_atualiza_tempo_decorrido(self):
+        e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL)
+        e = atualizar_indicadores(e, PACOTE_HEARTBEAT)
+        assert e.tempo_decorrido_ms == 1500
+
     def test_heartbeat_atualiza_timestamp(self):
         e = atualizar_indicadores(criar_estado_inicial(), PACOTE_INICIAL)
         e = atualizar_indicadores(e, PACOTE_HEARTBEAT)
@@ -171,6 +176,11 @@ class TestHeartbeatRouter:
         client.post("/api/telemetria/pacote", json=PACOTE_INICIAL)
         r = client.post("/api/telemetria/pacote", json=PACOTE_HEARTBEAT)
         assert r.json()["estado"]["bateria_atual"] == 93
+
+    def test_heartbeat_atualiza_tempo_no_estado(self, client: TestClient):
+        client.post("/api/telemetria/pacote", json=PACOTE_INICIAL)
+        r = client.post("/api/telemetria/pacote", json=PACOTE_HEARTBEAT)
+        assert r.json()["estado"]["tempo_decorrido_ms"] == 1500
 
     def test_heartbeat_persiste_alerta_bateria_critica(self, client: TestClient, session: Session):
         idb = client.post("/api/telemetria/pacote", json=PACOTE_INICIAL).json()["estado"]["id_corrida_banco"]

@@ -457,6 +457,7 @@ class TestBroadcastWebSocket:
             msgs = self._collect_until(ws, "HEARTBEAT")
             hb_msg = next(m for m in msgs if m["type"] == "HEARTBEAT")
             assert hb_msg["data"]["bateria_atual"] == 93
+            assert hb_msg["data"]["tempo_decorrido_ms"] == 1500
 
     def test_tipo5_broadcast_alerta_temperatura(self, client):
         with client.websocket_connect("/api/telemetria/ws") as ws:

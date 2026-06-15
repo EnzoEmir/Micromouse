@@ -445,6 +445,7 @@ def _processar_pacote_heartbeat(
 ) -> None:
     """Processa um Heartbeat (tipo=4): atualiza bateria e timestamp."""
     estado.bateria_atual = pacote["bateria"]
+    estado.tempo_decorrido_ms = pacote["timestamp_ms"]
     estado.ultimo_timestamp_ms = pacote["timestamp_ms"]
     _atualizar_alerta_bateria_critica(
         estado,
