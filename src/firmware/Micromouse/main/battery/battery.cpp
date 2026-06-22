@@ -16,6 +16,16 @@
 #define BATTERY_REST_CURRENT_A  0.05f
 #define VOLTAGE_CORRECTION_ALPHA 0.01f
 
+// MOCK: o INA226 da PCB nao esta funcionando. Enquanto o hardware nao e
+// resolvido, retornamos valores fixos plausiveis para que os pacotes de
+// telemetria saiam com algum valor de bateria. Remover este bloco e
+// restaurar as leituras reais quando o INA226 voltar a funcionar.
+#define BATTERY_MOCK 1
+#define BATTERY_MOCK_VOLTAGE_V  7.8f
+#define BATTERY_MOCK_CURRENT_A  0.30f
+#define BATTERY_MOCK_POWER_W    (BATTERY_MOCK_VOLTAGE_V * BATTERY_MOCK_CURRENT_A)
+#define BATTERY_MOCK_SOC        85.0f
+
 
 static bool i2c_write_cb(uint8_t /*dev_addr*/, const uint8_t *data, size_t len) {
     return i2c_manager_write(I2C_ADDR_INA226_BOARD, data, len, I2C_TIMEOUT_MS);
@@ -38,12 +48,22 @@ Battery::Battery()
 }
 
 bool Battery::init() {
-    // Inicializa o barramento I2C compartilhado via manager.
+    // Inicializa o barramento I2C compartilhado via manager. Isso e necessario
+    // mesmo no modo MOCK porque os ToFs e o IMU dependem do mesmo barramento.
     if (!i2c_manager_init()) {
         ESP_LOGE("Battery", "Failed to init shared I2C bus");
         return false;
     }
 
+#if BATTERY_MOCK
+    // MOCK: nao registra/configura o INA226 (hardware com defeito). Apenas
+    // semeia o SOC com um valor fixo e segue em frente.
+    ESP_LOGW("Battery", "MOCK ativo: INA226 ignorado, usando valores fixos");
+    ina_sensor      = nullptr;
+    soc_            = BATTERY_MOCK_SOC;
+    last_update_us_ = esp_timer_get_time();
+    return true;
+#else
     if (!i2c_manager_register_device(I2C_ADDR_INA226_BOARD)) {
         ESP_LOGE("Battery", "Failed to register INA226 on I2C bus");
         return false;
@@ -73,9 +93,15 @@ bool Battery::init() {
     soc_            = voltageToSOC(v0);
     last_update_us_ = esp_timer_get_time();
     return true;
+#endif // BATTERY_MOCK
 }
 
 void Battery::update() {
+#if BATTERY_MOCK
+    // MOCK: mantem o SOC fixo (sem integracao de corrente real).
+    soc_ = BATTERY_MOCK_SOC;
+    return;
+#else
     const int64_t now_us = esp_timer_get_time();
     const float delta_s  = static_cast<float>(now_us - last_update_us_) / 1e6f;
     last_update_us_ = now_us;
@@ -91,24 +117,37 @@ void Battery::update() {
 
     if (soc_ > 100.0f) soc_ = 100.0f;
     if (soc_ <   0.0f) soc_ =   0.0f;
+#endif // BATTERY_MOCK
 }
 
 float Battery::getVoltage() {
+#if BATTERY_MOCK
+    return BATTERY_MOCK_VOLTAGE_V;
+#else
     if (!ina_sensor) return 0.0f;
     std::error_code ec;
     return ina_sensor->bus_voltage_volts(ec);
+#endif
 }
 
 float Battery::getCurrent() {
+#if BATTERY_MOCK
+    return BATTERY_MOCK_CURRENT_A;
+#else
     if (!ina_sensor) return 0.0f;
     std::error_code ec;
     return ina_sensor->current_amps(ec);
+#endif
 }
 
 float Battery::getPower() {
+#if BATTERY_MOCK
+    return BATTERY_MOCK_POWER_W;
+#else
     if (!ina_sensor) return 0.0f;
     std::error_code ec;
     return ina_sensor->power_watts(ec);
+#endif
 }
 
 float Battery::getSOC() {

@@ -28,7 +28,7 @@
 // Botoes de controle (entrada com pull-up interno; o botao curto-circuita
 // para o GND, portanto sao ativos em nivel baixo).
 #define BUTTON_START_PIN  GPIO_NUM_19 // D19: 1o clique mapeia, 2o clique corre
-#define BUTTON_SIZE_PIN   GPIO_NUM_23 // D23: cicla o tamanho 4x4 -> 8x8 -> 16x16
+#define BUTTON_SIZE_PIN   GPIO_NUM_23 // D23: cicla o tamanho 4x4 -> 8x8
 
 // Sensores ToF (VL53L0X) — pinos XSHUT
 // ATENÇÃO: verifique os pinos abaixo contra o esquemático antes de soldar

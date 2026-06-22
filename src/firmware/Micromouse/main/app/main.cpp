@@ -56,9 +56,9 @@ constexpr float HEADING_ALPHA      = 0.98f;
 // Ganho da correcao de rumo no avanco reto (desvio de PWM por rad de erro).
 constexpr float KP_HEADING         = 400.0f;     // CALIBRAR
 // Geometria para converter contagens de encoder em rotacao do robo.
-constexpr float WHEEL_DIAMETER_M     = 0.024f;   // CALIBRAR: diametro da roda (m)
+constexpr float WHEEL_DIAMETER_M     = 0.0298f;   // CALIBRAR: diametro da roda (m)
 constexpr int   COUNTS_PER_WHEEL_REV = 588;      // medido: 147 (1 canal) x4 (quadratura)
-constexpr float TRACK_WIDTH_M        = 0.085f;   // CALIBRAR: distancia entre as rodas (m)
+constexpr float TRACK_WIDTH_M        = 0.068725f;   // CALIBRAR: distancia entre as rodas (m)
 // Metros percorridos por 1 contagem de encoder (de uma roda).
 constexpr float METERS_PER_COUNT   = (float)M_PI * WHEEL_DIAMETER_M / COUNTS_PER_WHEEL_REV;
 
@@ -75,10 +75,10 @@ Labirinto g_labirinto;
 Telemetria g_telemetria(BACKEND_URL, 1500); // heartbeat de 1,5 s
 
 // Tamanhos de labirinto que o botao 2 cicla, em ordem. Comeca em 4x4.
+// (O 16x16 foi removido dos requisitos do projeto.)
 const Labirinto::Tamanho kTamanhos[] = {
     Labirinto::Tamanho::k4x4,
     Labirinto::Tamanho::k8x8,
-    Labirinto::Tamanho::k16x16,
 };
 constexpr int kNumTamanhos = sizeof(kTamanhos) / sizeof(kTamanhos[0]);
 int g_idx_tamanho = 0; // 4x4 por padrao
@@ -103,22 +103,11 @@ struct EventoTelemetria {
 constexpr int kFilaTelemetriaLen = 12;
 QueueHandle_t g_fila_telemetria = nullptr;
 
-// Ordem de boot em cascata
-IV_Vl53l0x g_tof_f_left({
-    .position = IV_Vl53l0x::Position::FRONT_LEFT,
-    .address = I2C_ADDR_VL53L0X_ALT_1, .xshut_pin = TOF_FRONT_LEFT_XSHUT_PIN,
-    .i2c_speed_hz = I2C_MANAGER_DEFAULT_SPEED_HZ, .timing_budget_ms = 20,
-    .log_level = espp::Logger::Verbosity::WARN,
-});
+// Ordem de boot em cascata.
+// O robo usa apenas 3 ToFs: frente, esquerda e direita (os laterais a 90 graus).
 IV_Vl53l0x g_tof_front({
     .position = IV_Vl53l0x::Position::FRONT,
     .address = I2C_ADDR_VL53L0X_ALT_0, .xshut_pin = TOF_FRONT_XSHUT_PIN,
-    .i2c_speed_hz = I2C_MANAGER_DEFAULT_SPEED_HZ, .timing_budget_ms = 20,
-    .log_level = espp::Logger::Verbosity::WARN,
-});
-IV_Vl53l0x g_tof_f_right({
-    .position = IV_Vl53l0x::Position::FRONT_RIGHT,
-    .address = I2C_ADDR_VL53L0X_ALT_2, .xshut_pin = TOF_FRONT_RIGHT_XSHUT_PIN,
     .i2c_speed_hz = I2C_MANAGER_DEFAULT_SPEED_HZ, .timing_budget_ms = 20,
     .log_level = espp::Logger::Verbosity::WARN,
 });
@@ -650,16 +639,12 @@ bool initSensores() {
     ESP_LOGI(TAG, "[OK] Bateria inicializada");
 
     // 2. ToFs: desliga todos e faz o boot em cascata (cada um assume seu addr).
-    g_tof_f_left.disable();
     g_tof_front.disable();
-    g_tof_f_right.disable();
     g_tof_left.disable();
     g_tof_right.disable();
     vTaskDelay(pdMS_TO_TICKS(20));
 
-    if (!g_tof_f_left.init())  ESP_LOGE(TAG, "Falha ToF FRONT_LEFT");
     if (!g_tof_front.init())   ESP_LOGE(TAG, "Falha ToF FRONT");
-    if (!g_tof_f_right.init()) ESP_LOGE(TAG, "Falha ToF FRONT_RIGHT");
     if (!g_tof_left.init())    ESP_LOGE(TAG, "Falha ToF LEFT");
     if (!g_tof_right.init())   ESP_LOGE(TAG, "Falha ToF RIGHT");
     ESP_LOGI(TAG, "[OK] ToFs inicializados");
