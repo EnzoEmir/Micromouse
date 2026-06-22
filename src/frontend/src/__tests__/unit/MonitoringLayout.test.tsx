@@ -7,7 +7,6 @@ describe("MonitoringLayout", () => {
     activeView: "telemetria" as const,
     onNavigateTelemetria: vi.fn(),
     onNavigateCorridas: vi.fn(),
-    onNavigateEstados: vi.fn(),
     eyebrow: "Monitoring",
     title: "Dashboard",
     description: "System overview",
@@ -51,14 +50,12 @@ describe("MonitoringLayout", () => {
   it("chama funcoes de navegacao", () => {
     const onNavTelemetria = vi.fn();
     const onNavCorridas = vi.fn();
-    const onNavEstados = vi.fn();
 
     render(
       <MonitoringLayout 
         {...defaultProps} 
         onNavigateTelemetria={onNavTelemetria}
         onNavigateCorridas={onNavCorridas}
-        onNavigateEstados={onNavEstados}
       >
         <div />
       </MonitoringLayout>
@@ -71,10 +68,6 @@ describe("MonitoringLayout", () => {
     const telemetriaBtn = screen.getByTitle("Monitoramento");
     fireEvent.click(telemetriaBtn);
     expect(onNavTelemetria).toHaveBeenCalled();
-
-    const estadosBtn = screen.getByRole("button", { name: /Estados/ });
-    fireEvent.click(estadosBtn);
-    expect(onNavEstados).toHaveBeenCalled();
   });
 
   it("alterna colapso do menu", () => {
