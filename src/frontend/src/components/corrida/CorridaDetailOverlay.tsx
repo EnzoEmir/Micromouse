@@ -3,10 +3,44 @@ import { X, Clock, Gauge, MapPin, Target, ChevronRight, Activity } from "lucide-
 import { obterCorrida } from "../../services/corrida";
 import type { CorridaDetailResponse, CelulaResponse } from "../../types/corrida";
 import type { Cell, Position } from "../maze/types";
+import { createMaze } from "../maze/mazeUtils";
 
 interface CorridaDetailOverlayProps {
   idCorrida: number;
   onClose: () => void;
+}
+
+export function buildStaticMazeFromCells(
+  gridSize: number,
+  celulas: CelulaResponse[],
+  routeCells: Map<string, CelulaResponse>,
+): Cell[][] {
+  const baseMaze = createMaze(gridSize);
+  const cellsByCoordinate = new Map(
+    celulas.map((cell) => [`${cell.coordenada_x},${cell.coordenada_y}`, cell]),
+  );
+
+  return baseMaze.map((row, rowIndex) =>
+    row.map((baseCell, colIndex) => {
+      const coordKey = `${colIndex},${rowIndex}`;
+      const cell = cellsByCoordinate.get(coordKey);
+
+      if (!cell) {
+        return baseCell;
+      }
+
+      return {
+        visited: routeCells.has(coordKey),
+        walls: {
+          north: cell.parede_norte,
+          south: cell.parede_sul,
+          east: cell.parede_leste,
+          west: cell.parede_oeste,
+        },
+        historyStep: null,
+      };
+    }),
+  );
 }
 
 export const CorridaDetailOverlay: React.FC<CorridaDetailOverlayProps> = ({
@@ -105,58 +139,7 @@ export const CorridaDetailOverlay: React.FC<CorridaDetailOverlayProps> = ({
     ? { row: ultimaCelulaData.coordenada_y, col: ultimaCelulaData.coordenada_x }
     : undefined;
 
-  // 3. Reconstrução do Labirinto focada na Rota (Lógica de Corredor)
-  const staticMaze: Cell[][] = Array.from({ length: gridSize }, (_, row) =>
-    Array.from({ length: gridSize }, (_, col) => {
-      const coordKey = `${col},${row}`;
-      const isInRoute = cellsInRouteMap.has(coordKey);
-
-      if (!isInRoute) {
-        return {
-          visited: false,
-          walls: { north: false, south: false, east: false, west: false },
-          historyStep: null,
-        };
-      }
-
-      // Lógica de Corredor: Identificar onde o caminho entra e sai desta célula
-      const allowed = { north: false, south: false, east: false, west: false };
-      
-      for (let i = 0; i < pathPositions.length; i++) {
-        const curr = pathPositions[i];
-        if (curr.row === row && curr.col === col) {
-          // Conexão com o anterior
-          if (i > 0) {
-            const prev = pathPositions[i - 1];
-            if (prev.row === row - 1 && prev.col === col) allowed.north = true;
-            if (prev.row === row + 1 && prev.col === col) allowed.south = true;
-            if (prev.row === row && prev.col === col + 1) allowed.east = true;
-            if (prev.row === row && prev.col === col - 1) allowed.west = true;
-          }
-          // Conexão com o próximo
-          if (i < pathPositions.length - 1) {
-            const next = pathPositions[i + 1];
-            if (next.row === row - 1 && next.col === col) allowed.north = true;
-            if (next.row === row + 1 && next.col === col) allowed.south = true;
-            if (next.row === row && next.col === col + 1) allowed.east = true;
-            if (next.row === row && next.col === col - 1) allowed.west = true;
-          }
-        }
-      }
-
-      // Adiciona parede em todas as direções pela qual a rota NÃO passa
-      return {
-        visited: true,
-        walls: {
-          north: !allowed.north,
-          south: !allowed.south,
-          east: !allowed.east,
-          west: !allowed.west,
-        },
-        historyStep: null,
-      };
-    })
-  );
+  const staticMaze = buildStaticMazeFromCells(gridSize, celulasList, cellsInRouteMap);
 
   const formatarTempo = (ms: number | null) => {
     if (ms === null || ms === undefined) return "--:--.---";
