@@ -296,8 +296,14 @@ bool IV_Vl53l0x::init() {
     // Desabilitar verificações de rate MSRC e PRE_RANGE
     writeReg(Reg::MSRC_CONFIG_CONTROL, readReg8(Reg::MSRC_CONFIG_CONTROL) | 0x12);
 
-    // Limite mínimo de sinal: 0.25 MCPS
-    writeReg16(Reg::FINAL_RANGE_CONFIG_MIN_COUNT_RATE_RTN_LIMIT, 0x0020);
+    // Limite mínimo de sinal (configurável por sensor). Formato ponto-fixo 9.7:
+    // valor_registro = MCPS * 128. Ex.: 0.25 MCPS -> 0x0020.
+    {
+        float mcps = config_.signal_rate_limit_mcps;
+        if (mcps <= 0.0f) mcps = 0.25f; // fallback seguro
+        uint16_t srl = (uint16_t)(mcps * 128.0f + 0.5f);
+        writeReg16(Reg::FINAL_RANGE_CONFIG_MIN_COUNT_RATE_RTN_LIMIT, srl);
+    }
 
     writeReg(Reg::SYSTEM_SEQUENCE_CONFIG, 0xFF);
 

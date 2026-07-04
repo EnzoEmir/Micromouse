@@ -1,36 +1,43 @@
-/* Teste integrado de NAVEGACAO (junta teste_gyro + teste_para + teste_tof +
- * teste_tof_lateral).
+/* Arquitetura:
+ *   - O modulo Labirinto (maze/maze.hpp) roda o FLOOD-FILL e a maquina de estados
+ *     (Explorar -> Refinar -> Voltar -> FastRun). A cada passo ele sensoria as
+ *     paredes da celula atual e chama duas primitivas do robo:
+ *         virarPara(Direcao ABSOLUTA) -> alinha o robo para N/L/S/O (gira 90/180)
+ *         avancar()                   -> anda EXATAMENTE 1 celula (tile)
+ *   - Modo HIBRIDO dos sensores nessas primitivas:
+ *         ENCODERS (PCNT) : distancia do tile (COUNTS_PER_TILE) e linha reta.
+ *         ToFs laterais   : centralizacao entre as paredes.
+ *         ToF frontal     : parada de seguranca + recuo/recentralizacao.
+ *         Giroscopio (MPU): fecha o giro de 90/180 graus.
  *
- * Ciclo (repete para sempre):
- *   1) ANDA para frente mantendo-se CENTRALIZADO pelos ToFs laterais (corrige
- *      o rumo pela diferenca esquerda/direita) ate o ToF FRONTAL ver parede.
- *   2) PARA e RECENTRALIZA a distancia frontal (pulsos de re/frente).
- *   3) DECIDE o lado pelos ToFs laterais: vira para onde houver abertura
- *      (sem parede). Prefere a ESQUERDA; se os dois lados tem parede, da 180.
- *   4) VIRA 90 graus com o GIROSCOPIO (malha fechada) e volta ao passo 1.
- *
- * Uso:
- *   1) No main/CMakeLists.txt, deixe ativo apenas "app/teste_navegacao.cpp" na
- *      lista de SRCS (comente as demais).
- *   2) idf.py build flash monitor
+ * ONDE AJUSTAR O MOVIMENTO (bloco PARAMETROS abaixo):
+ *   - Distancia por celula ....... COUNTS_PER_TILE
+ *   - Angulo do giro (90 graus) .. ALVO_GRAUS + MARGEM_PARADA_GRAUS
+ *   - Velocidade de avanco ....... PWM_DRIVE
+ *   - Forca da centralizacao ..... KP_CENTRO / CORR_MAX
+ *   - Largada/objetivo do maze ... START / GOAL / TAMANHO_LAB
  *
  * Sensores (mapeamento fisico real, descoberto na bancada):
- *   FRONTAL  = rotulo FRONT_LEFT  (addr 0x2B, xshut TOF_FRONT_LEFT_XSHUT_PIN)
- *   ESQUERDA = rotulo FRONT       (addr 0x2A, xshut TOF_FRONT_XSHUT_PIN)
- *   DIREITA  = rotulo FRONT_RIGHT (addr 0x2C, xshut TOF_FRONT_RIGHT_XSHUT_PIN)
- *   GIRO     = MPU9250 (0x68) lido DIRETO por I2C (gyro +-250 dps, 131 LSB/dps)
+ *   FRONTAL  = rotulo FRONT_LEFT  (addr 0x2B)
+ *   ESQUERDA = rotulo FRONT       (addr 0x2A)
+ *   DIREITA  = rotulo FRONT_RIGHT (addr 0x2C)
+ *   GIRO     = MPU9250 (0x68) por I2C (gyro +-1000 dps, 32.8 LSB/dps)
+ *   ENCODERS = PCNT nos pinos MOTOR_{LEFT,RIGHT}_ENC_{A,B}_PIN
+ *   OBS: encoder DIREITO instavel na bancada; o codigo cai p/ ToF quando diverge.
  *
- * Todas as distancias sao em mm REAIS (leitura bruta - bias caracterizado).
+ * Distancias ToF sempre em mm REAIS (leitura bruta - bias caracterizado).
  */
 
 #include <cstdio>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <algorithm>
 
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "driver/i2c_master.h"
+#include "driver/pulse_cnt.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -40,6 +47,11 @@
 #include "i2c_manager.hpp"
 #include "battery/battery.hpp"
 #include "vl53l0x/IV_Vl53l0x.hpp"
+#include "maze/maze.hpp"
+
+#include "nvs_flash.h"
+#include "wifi.hpp"
+#include "envio_dados.hpp"
 
 static const char *TAG = "TESTE_NAV";
 
@@ -50,8 +62,9 @@ namespace {
 constexpr int   PWM_MAX     = 1023;                  // resolucao 10 bits
 
 // --- Avanco ---
-constexpr int   PWM_DRIVE   = (int)(PWM_MAX * 0.25f);// velocidade de avanco (25%)
-constexpr float TRIM_R      = 1.05f;                 // feed-forward do motor direito
+// PWM_DRIVE = VELOCIDADE de avanco (fracao do PWM_MAX). Aumentar = mais rapido.
+constexpr int   PWM_DRIVE   = (int)(PWM_MAX * 0.25f);// 25% do PWM
+constexpr float TRIM_R      = 1.05f;                 // compensa motor direito mais fraco
 constexpr int   PWM_DRIVE_R = (int)(PWM_DRIVE * TRIM_R) > PWM_MAX
                                   ? PWM_MAX : (int)(PWM_DRIVE * TRIM_R);
 constexpr int   ESPERA_MS   = 3000;                  // tempo para tirar a mao
@@ -60,17 +73,22 @@ constexpr int   ESPERA_MS   = 3000;                  // tempo para tirar a mao
 constexpr float BIAS_FRENTE   = 69.0f;   // lida - real (caracterizado)
 constexpr float FRONT_STOP_MM = 50.0f;   // para se a parede estiver a <= 5 cm
 constexpr int   CONFIRMACOES  = 2;        // leituras seguidas p/ confirmar parede
-constexpr int64_t FRENTE_TIMEOUT_US = 15000000; // trava: 15 s andando sem ver parede
 
 // --- Recentralizacao frontal (pulsos) ---
-constexpr float TARGET_MM   = 50.0f;     // distancia frontal final desejada
-constexpr float TOL_MM      = 5.0f;      // faixa aceitavel 45..55 mm
+constexpr float TARGET_MM   = 25.0f;     // distancia frontal final desejada
+constexpr float TOL_MM      = 5.0f;      // faixa aceitavel
 constexpr int   PWM_AJUSTE  = PWM_MAX / 3;
 constexpr int   PWM_AJUSTE_R = (int)(PWM_AJUSTE * TRIM_R) > PWM_MAX
                                   ? PWM_MAX : (int)(PWM_AJUSTE * TRIM_R);
 constexpr int   PULSO_MS    = 70;
 constexpr int   ASSENTA_MS  = 250;
 constexpr int   MAX_AJUSTES = 25;
+
+// --- Folga para pivotar (evita travar a quina na parede ao girar) ---
+// Antes de um giro, se houver parede logo a frente e o robo estiver perto
+// demais, ele recua ate abrir esta folga (o giro e um pivo no eixo: a quina
+// dianteira varre para frente e raspa se estiver colada na parede).
+constexpr float PIVO_FOLGA_MM = 80.0f;
 
 // --- ToFs laterais ---
 constexpr float BIAS_ESQ = 55.0f;        // lida - real (esquerda)
@@ -79,16 +97,26 @@ constexpr int   N_AMOSTRAS = 7;
 constexpr float WALL_THRESHOLD_MM = 100.0f; // < isto = ha parede do lado
 constexpr float PAREDE_ALVO_MM    = 50.0f;  // distancia desejada de cada parede
 
-// --- Centralizacao durante o avanco (controle proporcional, bem suave) ---
-// Correcao MINIMA: ganho baixo, saturacao pequena e filtro forte. So da um
-// leve empurrao para o centro, sem trancos. Aumente os valores se quiser uma
-// recentralizacao mais firme.
-constexpr float KP_CENTRO    = 0.5f;     // PWM por mm de erro lateral (CALIBRAR)
-constexpr int   CORR_MAX     = 25;       // saturacao da correcao (menor = mais suave)
-constexpr float FILTRO_CORR  = 0.08f;    // passa-baixa da correcao (0..1; menor = mais suave)
-constexpr float ZONA_MORTA_MM = 8.0f;    // ignora erros pequenos (nao corrige a toa)
+// --- Distancia de 1 CELULA (medida pelos encoders, PCNT quadratura x4) ---
+// COUNTS_PER_TILE = pulsos de encoder por celula. Aumentar = anda MAIS por
+// celula; diminuir = anda MENOS. (~57 pulsos/cm; 950 ~= 18 cm nesta bancada).
+constexpr long    COUNTS_PER_TILE = 950;
+constexpr float   FRENTE_LIVRE_MM = 120.0f;   // df acima disso = frente ABERTA (sem parede)
+constexpr int64_t TILE_TIMEOUT_US = 5000000;  // trava de seguranca por tile (5 s)
 
-// --- Giroscopio / giro 90 graus ---
+// --- CENTRALIZACAO / linha reta durante o avanco ---
+// Correcao aplicada aos motores = KP_RETA*(cr-cl) + KP_CENTRO*erro_lateral_ToF.
+// corr>0 => acelera esquerda / freia direita => corrige desvio para a esquerda.
+// Centralizando de menos: AUMENTE KP_CENTRO e/ou CORR_MAX. Se serpentear (oscila
+// entre as paredes): DIMINUA KP_CENTRO ou reduza FILTRO_CORR.
+constexpr float KP_RETA      = 0.40f;    // ganho do reto por encoder (por pulso de dif L/R)
+constexpr float KP_CENTRO    = 0.50f;    // ganho da centralizacao por ToF (por mm de erro)
+constexpr int   CORR_MAX     = 40;       // teto da correcao (evita puxar demais)
+constexpr float FILTRO_CORR  = 0.20f;    // suavizacao da correcao (0..1; maior = responde mais rapido)
+constexpr float ZONA_MORTA_MM = 8.0f;    // ignora erros laterais menores que isto
+
+// --- GIRO de 90/180 graus (pivo no eixo, angulo fechado pelo giroscopio) ---
+// Registradores do MPU9250 (nao mexer):
 constexpr uint8_t MPU9250_ADDR        = 0x68;
 constexpr uint8_t MPU_REG_PWR_MGMT_1  = 0x6B;
 constexpr uint8_t MPU_REG_SMPLRT_DIV  = 0x19;
@@ -97,12 +125,40 @@ constexpr uint8_t MPU_REG_GYRO_CONFIG = 0x1B;
 constexpr uint8_t MPU_REG_ACCEL_CONFIG  = 0x1C;
 constexpr uint8_t MPU_REG_ACCEL_CONFIG2 = 0x1D;
 constexpr uint8_t MPU_REG_ACCEL_XOUT_H  = 0x3B;
-constexpr float   GYRO_LSB_POR_DPS    = 131.0f;
-constexpr int     PWM_GIRO            = (int)(PWM_MAX * 0.30f); // 30%
-constexpr float   ALVO_GRAUS          = 90.0f;
-constexpr float   MARGEM_PARADA_GRAUS = 5.0f;  // para antes (inercia) - CALIBRAR
+constexpr float   GYRO_LSB_POR_DPS    = 32.8f;  // +-1000 dps (evita saturacao no pivo)
+constexpr int     PWM_GIRO            = (int)(PWM_MAX * 0.35f); // 35% (fase rapida do giro)
+constexpr int     PWM_GIRO_SLOW       = (int)(PWM_MAX * 0.22f); // 22% (fase lenta, aproximacao)
+// >>> AJUSTE DO GIRO DE 90 GRAUS <<<
+// ALVO_GRAUS: angulo desejado do giro (90). MARGEM_PARADA_GRAUS: quanto antes do
+// alvo o motor e cortado (a inercia completa o resto). Se o robo:
+//   - gira de MENOS (fecha < 90): DIMINUA MARGEM_PARADA_GRAUS.
+//   - gira de MAIS  (passa de 90): AUMENTE MARGEM_PARADA_GRAUS.
+constexpr float   ALVO_GRAUS          = 90.0f;  // angulo alvo do giro
+constexpr float   APPROACH_GRAUS      = 35.0f;  // faltando isto p/ o alvo, entra na fase lenta
+constexpr float   MARGEM_PARADA_GRAUS = 25.0f;  // corta o motor a (ALVO - isto); inercia fecha o resto
 constexpr int     SETTLE_MS           = 400;
 constexpr int64_t GIRO_TIMEOUT_US     = 8000000; // trava de seguranca por giro
+
+// --- Labirinto (flood-fill) ---
+// GOAL do flood-fill e uma celula UNICA; para um bloco central 2x2 aponte para
+// uma das celulas do bloco.
+constexpr Labirinto::Tamanho TAMANHO_LAB = Labirinto::Tamanho::k4x4; // k4x4 / k8x8
+constexpr Labirinto::Posicao START = {0, 0};   // celula de largada
+constexpr Labirinto::Posicao GOAL  = {1, 1};   // <<< celula objetivo (ajuste ao seu labirinto)
+// A largada assume a frente do robo apontando para NORTE (+y). A direita fica
+// LESTE (+x), a esquerda OESTE. O modulo Labirinto tambem forca heading=Norte.
+
+// --- Telemetria / Wi-Fi (envio para o servidor web) ---
+const char* WIFI_SSID   = "NOME_DO_SEU_WIFI";
+const char* WIFI_PASS   = "SENHA_DO_SEU_WIFI";
+const char* BACKEND_URL = "http://192.168.1.50:8000/api/telemetria/pacote";
+constexpr int   HEARTBEAT_MS   = 1500;   // periodo do heartbeat (tipo 4)
+constexpr float TEMP_CRITICA_C = 60.0f;  // limiar do alerta critico (tipo 5)
+constexpr float TILE_M         = 0.18f;  // 1 tile = 18 cm (ver COUNTS_PER_TILE)
+// Temperatura vem do proprio MPU9250 (registrador TEMP_OUT), sem sensor extra.
+constexpr uint8_t MPU_REG_TEMP_OUT_H = 0x41;
+constexpr float   TEMP_SENS_LSB_C    = 333.87f; // sensibilidade (LSB/C) do MPU9250
+constexpr float   TEMP_OFFSET_C      = 21.0f;   // offset do sensor
 
 // =====================  ESTADO GLOBAL  =====================
 
@@ -110,6 +166,23 @@ Battery g_battery;
 i2c_master_dev_handle_t g_mpu = nullptr;
 bool  g_mpu_ok = false;
 float g_bias_z = 0.0f;
+
+Labirinto g_maze;
+Labirinto::Direcao g_heading = Labirinto::Direcao::Norte; // orientacao FISICA
+
+// --- Telemetria ---
+bool    g_wifi_ok       = false;       // Wi-Fi conectado (habilita os envios)
+int64_t g_t0_ms         = 0;           // instante de inicio da corrida (ms)
+volatile int   g_bateria_pct  = 100;   // cache da bateria (%), atualizado pela nav
+volatile float g_temp_c       = 25.0f; // cache da temperatura do MPU (C)
+volatile bool  g_temp_critica = false; // ficou acima do limiar critico
+bool    g_rota_enviada  = false;       // pacote 2 (rota) ja foi enviado
+int     g_fastrun_tiles = 0;           // tiles andados durante a corrida rapida
+int64_t g_fastrun_t0_ms = 0;           // inicio da corrida rapida (ms)
+
+// Encoders (PCNT): uma unidade por roda.
+pcnt_unit_handle_t g_enc_left  = nullptr;
+pcnt_unit_handle_t g_enc_right = nullptr;
 
 // FRONTAL = FRONT_LEFT(0x2B) | ESQUERDA = FRONT(0x2A) | DIREITA = FRONT_RIGHT(0x2C)
 IV_Vl53l0x g_tof_front({
@@ -166,11 +239,11 @@ bool init_mpu() {
     mpu_write(MPU_REG_PWR_MGMT_1, 0x01); vTaskDelay(pdMS_TO_TICKS(10));
     mpu_write(MPU_REG_CONFIG,        0x03);
     mpu_write(MPU_REG_SMPLRT_DIV,    0x04);
-    mpu_write(MPU_REG_GYRO_CONFIG,   0x00); // +-250 dps
+    mpu_write(MPU_REG_GYRO_CONFIG,   0x10); // +-1000 dps (evita saturacao no pivo rapido)
     mpu_write(MPU_REG_ACCEL_CONFIG,  0x00);
     mpu_write(MPU_REG_ACCEL_CONFIG2, 0x03);
     vTaskDelay(pdMS_TO_TICKS(10));
-    ESP_LOGI(TAG, "MPU9250 OK (gyro +-250 dps).");
+    ESP_LOGI(TAG, "MPU9250 OK (gyro +-1000 dps).");
     return true;
 }
 
@@ -196,6 +269,60 @@ void calibrar_bias_z() {
     }
     g_bias_z = (n > 0) ? (float)(soma / n) : 0.0f;
     ESP_LOGI(TAG, "Bias gyro_z = %.2f LSB (%d amostras)", g_bias_z, n);
+}
+
+// =====================  ENCODERS (PCNT)  =====================
+
+// Cria uma unidade PCNT em quadratura x4 para um encoder (mesma config do
+// modulo motor/motor.cpp, que ja foi validado na bancada).
+bool init_encoder(pcnt_unit_handle_t *unit, gpio_num_t a_pin, gpio_num_t b_pin) {
+    pcnt_unit_config_t unit_config = {};
+    unit_config.high_limit = 30000;
+    unit_config.low_limit  = -30000;
+    if (pcnt_new_unit(&unit_config, unit) != ESP_OK) return false;
+
+    pcnt_glitch_filter_config_t filter_config = {};
+    filter_config.max_glitch_ns = 1000;
+    pcnt_unit_set_glitch_filter(*unit, &filter_config);
+
+    pcnt_chan_config_t chan_a_config = {};
+    chan_a_config.edge_gpio_num  = a_pin;
+    chan_a_config.level_gpio_num = b_pin;
+    pcnt_channel_handle_t chan_a = nullptr;
+    pcnt_new_channel(*unit, &chan_a_config, &chan_a);
+
+    pcnt_chan_config_t chan_b_config = {};
+    chan_b_config.edge_gpio_num  = b_pin;
+    chan_b_config.level_gpio_num = a_pin;
+    pcnt_channel_handle_t chan_b = nullptr;
+    pcnt_new_channel(*unit, &chan_b_config, &chan_b);
+
+    pcnt_channel_set_edge_action(chan_a, PCNT_CHANNEL_EDGE_ACTION_DECREASE,
+                                 PCNT_CHANNEL_EDGE_ACTION_INCREASE);
+    pcnt_channel_set_level_action(chan_a, PCNT_CHANNEL_LEVEL_ACTION_KEEP,
+                                  PCNT_CHANNEL_LEVEL_ACTION_INVERSE);
+    pcnt_channel_set_edge_action(chan_b, PCNT_CHANNEL_EDGE_ACTION_INCREASE,
+                                 PCNT_CHANNEL_EDGE_ACTION_DECREASE);
+    pcnt_channel_set_level_action(chan_b, PCNT_CHANNEL_LEVEL_ACTION_KEEP,
+                                  PCNT_CHANNEL_LEVEL_ACTION_INVERSE);
+
+    pcnt_unit_enable(*unit);
+    pcnt_unit_clear_count(*unit);
+    pcnt_unit_start(*unit);
+    return true;
+}
+bool initEncoders() {
+    bool ok_l = init_encoder(&g_enc_left,  MOTOR_LEFT_ENC_A_PIN,  MOTOR_LEFT_ENC_B_PIN);
+    bool ok_r = init_encoder(&g_enc_right, MOTOR_RIGHT_ENC_A_PIN, MOTOR_RIGHT_ENC_B_PIN);
+    if (!ok_l) ESP_LOGE(TAG, "Falha encoder ESQUERDO");
+    if (!ok_r) ESP_LOGE(TAG, "Falha encoder DIREITO");
+    return ok_l && ok_r;
+}
+long enc_left()  { int c = 0; pcnt_unit_get_count(g_enc_left,  &c); return c; }
+long enc_right() { int c = 0; pcnt_unit_get_count(g_enc_right, &c); return c; }
+void enc_zerar() {
+    pcnt_unit_clear_count(g_enc_left);
+    pcnt_unit_clear_count(g_enc_right);
 }
 
 // =====================  MOTORES  =====================
@@ -290,6 +417,51 @@ float lerEstavel(IV_Vl53l0x &tof, float bias, int n) {
     return v[k / 2];
 }
 
+// =====================  TELEMETRIA (envio para o web)  =====================
+
+// timestamp_ms relativo ao inicio da corrida, como pede a especificacao.
+int64_t telemetria_ts() { return esp_timer_get_time() / 1000 - g_t0_ms; }
+
+// NVS e requisito do esp_wifi_init (padrao erase-e-retry).
+void inicializar_nvs() {
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(err);
+}
+
+// Le a bateria (INA226 via I2C) e atualiza o cache. SO a task de navegacao
+// chama isto -> o barramento I2C fica com um unico dono.
+int atualizar_bateria() {
+    g_battery.update();
+    float soc = g_battery.getSOC();
+    if (soc < 0.0f)   soc = 0.0f;
+    if (soc > 100.0f) soc = 100.0f;
+    g_bateria_pct = (int)(soc + 0.5f);
+    return g_bateria_pct;
+}
+
+// Le a temperatura do MPU9250 (TEMP_OUT) e marca o flag se passar do limiar.
+void atualizar_temp() {
+    if (!g_mpu_ok) return;
+    uint8_t d[2] = {0};
+    if (mpu_read(MPU_REG_TEMP_OUT_H, d, sizeof(d)) != ESP_OK) return;
+    const int16_t traw = be_i16(d);
+    g_temp_c = traw / TEMP_SENS_LSB_C + TEMP_OFFSET_C;
+    if (g_temp_c >= TEMP_CRITICA_C) g_temp_critica = true;
+}
+
+// Task de fundo: mantem a conexao viva com heartbeats (tipo 4). SO faz HTTP
+// (le globais em cache) -> nao toca no I2C, nao concorre com a navegacao.
+void tarefa_heartbeat(void*) {
+    while (true) {
+        if (g_wifi_ok) enviar_heartbeat(BACKEND_URL, telemetria_ts(), g_bateria_pct);
+        vTaskDelay(pdMS_TO_TICKS(HEARTBEAT_MS));
+    }
+}
+
 // =====================  GIRO 90 GRAUS (gyro)  =====================
 
 void girar(bool sentido_direita) {
@@ -304,8 +476,9 @@ void girar(bool sentido_direita) {
     int64_t t_prev = esp_timer_get_time();
     const int64_t t0 = t_prev;
     bool timeout = false;
+    bool lento   = false;  // ja passou para a fase lenta de aproximacao
 
-    // Fase 1: gira ate o alvo (com margem) ou timeout.
+    // Fase 1: gira ate o alvo (com margem) ou timeout, desacelerando na chegada.
     while (fabsf(angulo) < ALVO_GRAUS - MARGEM_PARADA_GRAUS) {
         if (esp_timer_get_time() - t0 > GIRO_TIMEOUT_US) { timeout = true; break; }
         const int64_t now = esp_timer_get_time();
@@ -314,6 +487,12 @@ void girar(bool sentido_direita) {
         t_prev = now;
         float gz;
         if (ler_gz_dps(&gz)) angulo += gz * dt;
+
+        // Desacelera perto do alvo: menos inercia ao parar = menos overshoot.
+        if (!lento && fabsf(angulo) >= ALVO_GRAUS - APPROACH_GRAUS) {
+            lento = true;
+            pwm_left(PWM_GIRO_SLOW); pwm_right(PWM_GIRO_SLOW);
+        }
         vTaskDelay(pdMS_TO_TICKS(5));
     }
     motores_para();
@@ -334,60 +513,108 @@ void girar(bool sentido_direita) {
     else         ESP_LOGI(TAG, "<< Giro %s ok. Angulo final=%.1f graus", nome, fabsf(angulo));
 }
 
-// =====================  PASSOS DO CICLO  =====================
+// =====================  PRIMITIVAS DE MOVIMENTO  =====================
 
-// Anda para frente, centralizando pelos laterais, ate a parede frontal (ou timeout).
-// Retorna true se parou por PAREDE; false se por timeout.
-bool andarAteParede() {
-    ESP_LOGI(TAG, "Andando (centralizando pelos laterais)...");
+// Resultado de tentar avancar 1 celula.
+enum class Avanco {
+    TILE_OK,   // avancou 1 celula
+    PAREDE,    // encostou numa parede antes de completar a celula
+};
+
+// Anda EXATAMENTE 1 tile contando PULSOS de encoder. Mantem linha reta pela
+// diferenca L/R dos encoders e adiciona centralizacao ToF suave (hibrido).
+Avanco andarUmTile() {
+    enc_zerar();
     dir_frente();
     const int64_t t0 = esp_timer_get_time();
+    int64_t t_log     = t0;   // throttle dos logs de debug
     int   confirmados = 0;
-    float corr_filt   = 0.0f;  // correcao suavizada (passa-baixa)
+    float corr_filt   = 0.0f;
+    bool  aviso_enc   = false; // avisa 1x se detectar encoder morto
+    ESP_LOGI(TAG, ">> Tile: alvo=%ld pulsos", COUNTS_PER_TILE);
 
     while (true) {
-        // 1) Frontal: confirma parede.
+        const long cl = std::labs(enc_left());
+        const long cr = std::labs(enc_right());
+
+        // Robustez a encoder atrasado/intermitente: se as contagens divergem
+        // muito, o lado que conta MENOS esta falhando -> mede pelo MAIOR e
+        // desliga o reto por encoder (cai para a centralizacao por ToF). Se as
+        // contagens estao proximas, usa a media (comportamento normal).
+        const long maxc = std::max(cl, cr);
+        const long minc = std::min(cl, cr);
+        const bool enc_diverge = (maxc > 150 && minc < (maxc * 3) / 5);
+        const bool enc_reto_ok = !enc_diverge;
+        const long media = enc_diverge ? maxc : (cl + cr) / 2;
+        if (enc_diverge && !aviso_enc) {
+            aviso_enc = true;
+            ESP_LOGW(TAG, "Encoders divergindo (cl=%ld cr=%ld): medindo pelo maior "
+                          "e usando ToF p/ reto. Verifique o encoder %s.",
+                     cl, cr, (cl < cr) ? "ESQUERDO" : "DIREITO");
+        }
+
+        // (a) Parede imediata: parada de seguranca.
         const float df = lerReal(g_tof_front, BIAS_FRENTE);
         if (df >= 0.0f && df <= FRONT_STOP_MM) {
-            if (++confirmados >= CONFIRMACOES) { motores_para(); return true; }
+            if (++confirmados >= CONFIRMACOES) {
+                motores_para();
+                ESP_LOGW(TAG, "<< Tile PAREDE: df=%.0f mm | encL=%ld encR=%ld media=%ld",
+                         df, cl, cr, media);
+                return Avanco::PAREDE;
+            }
         } else {
             confirmados = 0;
         }
 
-        // 2) Centralizacao pelos laterais.
+        // (b) Completou o tile pela contagem de pulsos.
+        if (media >= COUNTS_PER_TILE) {
+            motores_para();
+            ESP_LOGI(TAG, "<< Tile OK: encL=%ld encR=%ld media=%ld (dif L/R=%ld)",
+                     cl, cr, media, cr - cl);
+            return Avanco::TILE_OK;
+        }
+
+        // (c) Correcao: reto por encoder + centralizacao ToF quando ha parede.
+        // Com encoder morto, err_reta=0 (usa so ToF; senao a correcao trava no talo).
+        float err_reta = enc_reto_ok ? (float)(cr - cl) : 0.0f; // >0: direita adiantada
+
         const float de = lerReal(g_tof_esq, BIAS_ESQ);
         const float dd = lerReal(g_tof_dir, BIAS_DIR);
-        const bool we = (de >= 0.0f && de < WALL_THRESHOLD_MM);
-        const bool wd = (dd >= 0.0f && dd < WALL_THRESHOLD_MM);
+        const bool  we = (de >= 0.0f && de < WALL_THRESHOLD_MM);
+        const bool  wd = (dd >= 0.0f && dd < WALL_THRESHOLD_MM);
+        float err_tof = 0.0f;
+        if (we && wd)      err_tof = dd - de;              // centra entre 2 paredes
+        else if (we)       err_tof = PAREDE_ALVO_MM - de;  // segue parede esquerda
+        else if (wd)       err_tof = dd - PAREDE_ALVO_MM;  // segue parede direita
+        if (std::fabs(err_tof) < ZONA_MORTA_MM) err_tof = 0.0f;
 
-        float err = 0.0f;
-        if (we && wd)      err = dd - de;              // centra entre as 2 paredes
-        else if (we)       err = PAREDE_ALVO_MM - de;  // segue parede esquerda
-        else if (wd)       err = dd - PAREDE_ALVO_MM;  // segue parede direita
-
-        // Zona morta: so corrige se o robo estiver claramente fora do centro.
-        if (std::fabs(err) < ZONA_MORTA_MM) err = 0.0f;
-
-        float corr = KP_CENTRO * err;
+        float corr = KP_RETA * err_reta + KP_CENTRO * err_tof;
         if (corr >  CORR_MAX) corr =  CORR_MAX;
         if (corr < -CORR_MAX) corr = -CORR_MAX;
-
-        // Passa-baixa: evita "tranco" e suaviza a correcao de rumo.
         corr_filt += FILTRO_CORR * (corr - corr_filt);
 
-        int dl = PWM_DRIVE   + (int)corr_filt; // corr>0 => vira p/ a direita
+        int dl = PWM_DRIVE   + (int)corr_filt; // corr>0 => acelera esquerda
         int dr = PWM_DRIVE_R - (int)corr_filt;
-        if (dl < 0) dl = 0;
-        if (dl > PWM_MAX) dl = PWM_MAX;
-        if (dr < 0) dr = 0;
-        if (dr > PWM_MAX) dr = PWM_MAX;
+        dl = std::max(0, std::min(dl, PWM_MAX));
+        dr = std::max(0, std::min(dr, PWM_MAX));
         pwm_left(dl); pwm_right(dr);
 
-        // 3) Trava de seguranca.
-        if (esp_timer_get_time() - t0 > FRENTE_TIMEOUT_US) {
+        // Debug throttled (~250 ms): progresso, erros e PWM aplicado.
+        const int64_t now = esp_timer_get_time();
+        if (now - t_log >= 250000) {
+            t_log = now;
+            ESP_LOGI(TAG,
+                     "  tile: encL=%ld encR=%ld media=%ld/%ld | df=%.0f de=%.0f dd=%.0f"
+                     " | eReta=%+.0f eToF=%+.0f corr=%+d | PWM L=%d R=%d",
+                     cl, cr, media, COUNTS_PER_TILE, df, de, dd,
+                     err_reta, err_tof, (int)corr_filt, dl, dr);
+        }
+
+        // (d) Trava de seguranca por celula.
+        if (esp_timer_get_time() - t0 > TILE_TIMEOUT_US) {
             motores_para();
-            ESP_LOGW(TAG, "Timeout andando sem ver parede.");
-            return false;
+            ESP_LOGW(TAG, "Tile: timeout (media=%ld pulsos).", media);
+            return Avanco::TILE_OK;
         }
         vTaskDelay(pdMS_TO_TICKS(5));
     }
@@ -413,26 +640,88 @@ void recentralizarFrontal() {
     ESP_LOGW(TAG, "ajuste frontal: nao convergiu");
 }
 
-// Le os laterais (parado) e decide o giro: prefere ESQUERDA aberta; senao
-// DIREITA aberta; se ambos com parede, da 180 (dois giros a direita).
-void decidirEgirar() {
-    const float de = lerEstavel(g_tof_esq, BIAS_ESQ, N_AMOSTRAS);
-    const float dd = lerEstavel(g_tof_dir, BIAS_DIR, N_AMOSTRAS);
-    // "aberto" = sem parede (invalido/fora de alcance ou alem do limiar).
-    const bool esq_aberto = (de < 0.0f) || (de > WALL_THRESHOLD_MM);
-    const bool dir_aberto = (dd < 0.0f) || (dd > WALL_THRESHOLD_MM);
-    ESP_LOGI(TAG, "Decisao | ESQ=%.0f mm (%s) | DIR=%.0f mm (%s)",
-             de, esq_aberto ? "aberto" : "parede",
-             dd, dir_aberto ? "aberto" : "parede");
+// Abre folga frontal antes de um pivo: se ha parede a frente e o robo esta perto
+// demais para girar sem raspar, recua (pelo ToF frontal) ate PIVO_FOLGA_MM. Nao
+// faz nada se a frente estiver aberta (leitura invalida ou ja com folga).
+void folgaParaPivo() {
+    for (int i = 0; i < MAX_AJUSTES; ++i) {
+        const float df = lerEstavel(g_tof_front, BIAS_FRENTE, 5);
+        if (df < 0.0f)              return;   // sem parede/leitura: nada a fazer
+        if (df >= PIVO_FOLGA_MM)    return;   // ja tem folga suficiente
+        dir_re();
+        pwm_left(PWM_AJUSTE); pwm_right(PWM_AJUSTE_R);
+        vTaskDelay(pdMS_TO_TICKS(PULSO_MS));
+        motores_para();
+        vTaskDelay(pdMS_TO_TICKS(ASSENTA_MS));
+        ESP_LOGI(TAG, "folga p/ pivo: df=%.0f mm -> recuando (alvo %.0f)", df, PIVO_FOLGA_MM);
+    }
+    ESP_LOGW(TAG, "folga p/ pivo: nao atingiu %.0f mm", PIVO_FOLGA_MM);
+}
 
-    if (esq_aberto) {
-        girar(/*direita=*/false);
-    } else if (dir_aberto) {
-        girar(/*direita=*/true);
-    } else {
-        ESP_LOGI(TAG, "Sem saida: girando 180.");
-        girar(true);
-        girar(true);
+// =====================  INTERFACE PARA O LABIRINTO  =====================
+
+// Le as 3 paredes da celula atual (robo PARADO), em relacao ao robo.
+Labirinto::LeituraSensores lerParedes() {
+    const float de = lerEstavel(g_tof_esq,   BIAS_ESQ,    N_AMOSTRAS);
+    const float dd = lerEstavel(g_tof_dir,   BIAS_DIR,    N_AMOSTRAS);
+    const float df = lerEstavel(g_tof_front, BIAS_FRENTE, 5);
+
+    Labirinto::LeituraSensores s;
+    s.parede_esquerda = (de >= 0.0f && de < WALL_THRESHOLD_MM);
+    s.parede_direita  = (dd >= 0.0f && dd < WALL_THRESHOLD_MM);
+    s.parede_frente   = (df >= 0.0f && df <= FRENTE_LIVRE_MM);
+    ESP_LOGI(TAG, "Paredes | ESQ %s (%.0f) | FRENTE %s (%.0f) | DIR %s (%.0f)",
+             s.parede_esquerda ? "PAREDE" : "livre", de,
+             s.parede_frente   ? "PAREDE" : "livre", df,
+             s.parede_direita  ? "PAREDE" : "livre", dd);
+    return s;
+}
+
+// Callback do Labirinto: alinha o robo para a direcao ABSOLUTA `destino`,
+// girando pelo caminho mais curto a partir da orientacao fisica atual.
+void virarPara(Labirinto::Direcao destino) {
+    static const char *kNome[4] = {"N", "L", "S", "O"};
+    const int diff = ((int)destino - (int)g_heading + 4) & 0x03;
+    const char *acao = (diff == 0) ? "reto"
+                     : (diff == 1) ? "vira DIR 90"
+                     : (diff == 2) ? "vira 180"
+                                   : "vira ESQ 90";
+    ESP_LOGI(TAG, "virarPara: %s -> %s (%s)",
+             kNome[(int)g_heading & 3], kNome[(int)destino & 3], acao);
+    switch (diff) {
+        case 0: /* ja alinhado */                       break;
+        case 1: girar(/*direita=*/true);                break; // 90 CW
+        // 180 (beco): abre folga frontal antes, senao a quina trava na parede.
+        case 2: folgaParaPivo(); girar(true); girar(true); break;
+        case 3: girar(/*direita=*/false);               break; // 90 CCW
+    }
+    g_heading = destino;
+}
+
+// Callback do Labirinto: anda exatamente 1 celula. Se encostar numa parede,
+// recentraliza a distancia frontal.
+void avancar() {
+    const Avanco r = andarUmTile();
+    if (r == Avanco::PAREDE) {
+        ESP_LOGW(TAG, "avancar: encostou numa parede; recentralizando.");
+        recentralizarFrontal();
+    }
+    // Conta tiles da corrida rapida para estimar a velocidade media (tipo 3).
+    if (r == Avanco::TILE_OK && g_maze.fase() == Labirinto::Fase::FastRun) {
+        ++g_fastrun_tiles;
+    }
+    vTaskDelay(pdMS_TO_TICKS(120)); // pequena pausa antes de sensoriar/girar
+}
+
+const char *nome_resultado(Labirinto::Resultado r) {
+    switch (r) {
+        case Labirinto::Resultado::EmProgresso:      return "EmProgresso";
+        case Labirinto::Resultado::AlcancouObjetivo: return "AlcancouObjetivo";
+        case Labirinto::Resultado::CaminhoFechado:   return "CaminhoFechado";
+        case Labirinto::Resultado::RetornouAoInicio: return "RetornouAoInicio";
+        case Labirinto::Resultado::FastRunCompleto:  return "FastRunCompleto";
+        case Labirinto::Resultado::Bloqueado:        return "Bloqueado";
+        default:                                     return "?";
     }
 }
 
@@ -440,7 +729,7 @@ void decidirEgirar() {
 
 extern "C" void app_main(void) {
     vTaskDelay(pdMS_TO_TICKS(200));
-    ESP_LOGI(TAG, "=== Teste de navegacao: anda -> centra -> decide -> gira 90 ===");
+    ESP_LOGI(TAG, "=== Navegacao FLOOD-FILL + ENCODERS ===");
 
     // 1) Bateria (sobe o barramento I2C compartilhado).
     if (!g_battery.init()) {
@@ -468,25 +757,125 @@ extern "C" void app_main(void) {
     // 3) Giroscopio.
     g_mpu_ok = init_mpu();
 
-    // 4) Motores.
+    // 4) Encoders (PCNT).
+    if (!initEncoders()) {
+        ESP_LOGE(TAG, "Encoders faltando; abortando.");
+        return;
+    }
+    ESP_LOGI(TAG, "Encoders OK (PCNT quadratura x4).");
+
+    // 5) Motores.
     initMotores();
     motores_para();
 
-    // 5) Largada + calibracao do gyro (robo PARADO).
+    // 5.1) Wi-Fi + telemetria. wifi_init_sta BLOQUEIA ate conectar (o modulo nao
+    //      tem timeout); sem AP disponivel o robo espera aqui. Conectando, liga
+    //      os envios. A navegacao roda igual mesmo se o Wi-Fi cair depois.
+    inicializar_nvs();
+    ESP_LOGI(TAG, "Conectando ao Wi-Fi '%s'...", WIFI_SSID);
+    wifi_init_sta(WIFI_SSID, WIFI_PASS);
+    g_wifi_ok = wifi_is_connected();
+    if (g_wifi_ok) ESP_LOGI(TAG, "Wi-Fi OK. Telemetria -> %s", BACKEND_URL);
+    else           ESP_LOGW(TAG, "Sem Wi-Fi; seguindo SEM telemetria.");
+
+    // 6) Labirinto (flood-fill).
+    g_maze.configurar(TAMANHO_LAB);
+    Labirinto::InterfaceRobo robo;
+    robo.virarPara = virarPara;
+    robo.avancar   = avancar;
+    g_maze.configurarRobo(robo);
+    g_maze.iniciar(START, GOAL);
+    g_heading = Labirinto::Direcao::Norte; // frente fisica = Norte na largada
+    ESP_LOGI(TAG, "Labirinto %dx%d | inicio {%u,%u} | objetivo {%u,%u}",
+             (int)g_maze.tamanho(), (int)g_maze.tamanho(),
+             (unsigned)START.x, (unsigned)START.y, (unsigned)GOAL.x, (unsigned)GOAL.y);
+
+    // 7) Largada + calibracao do gyro (robo PARADO).
     ESP_LOGI(TAG, "Largada em %d ms... tire a mao e mantenha PARADO.", ESPERA_MS);
     vTaskDelay(pdMS_TO_TICKS(ESPERA_MS));
     if (g_mpu_ok) { ESP_LOGI(TAG, "Calibrando gyro..."); calibrar_bias_z(); }
 
-    // 6) Ciclo infinito de navegacao.
-    while (true) {
-        const bool parede = andarAteParede();
-        if (parede) {
-            recentralizarFrontal();
-        } else {
-            // Parou por timeout (sem parede frontal): assenta e decide mesmo assim.
-            vTaskDelay(pdMS_TO_TICKS(ASSENTA_MS));
-        }
-        decidirEgirar();
-        vTaskDelay(pdMS_TO_TICKS(200)); // pequena pausa antes de reandar
+    // 7.1) Marco zero da corrida + pacote 0 (Config Inicial) + task de heartbeat.
+    g_t0_ms = esp_timer_get_time() / 1000;
+    atualizar_bateria();
+    atualizar_temp();
+    if (g_wifi_ok) {
+        enviar_configuracao_inicial(BACKEND_URL, telemetria_ts(),
+                                    (int)g_maze.tamanho(), g_bateria_pct); // tipo 0
     }
+    xTaskCreate(tarefa_heartbeat, "heartbeat", 4096, nullptr, 3, nullptr); // tipo 4
+
+    // 8) Ciclo do flood-fill: sensoria paredes -> passo (que gira e avanca).
+    while (true) {
+        // Atualiza caches (bateria + temperatura) e checa o alerta critico.
+        atualizar_bateria();
+        atualizar_temp();
+        if (g_temp_critica) {
+            motores_para();
+            ESP_LOGE(TAG, "TEMP CRITICA %.1f C -> abortando corrida.", g_temp_c);
+            if (g_wifi_ok) {
+                enviar_alerta_temperatura(BACKEND_URL, telemetria_ts(), g_temp_c);          // tipo 5
+                enviar_fim_corrida(BACKEND_URL, telemetria_ts(), false, 0.0f, g_bateria_pct); // tipo 3
+            }
+            break;
+        }
+
+        const Labirinto::LeituraSensores s = lerParedes();
+        const Labirinto::Resultado r = g_maze.passo(s);
+        const Labirinto::Posicao p = g_maze.posicao();
+        ESP_LOGI(TAG, "passo -> %s | pos {%u,%u} | fase %d",
+                 nome_resultado(r), (unsigned)p.x, (unsigned)p.y, (int)g_maze.fase());
+
+        // Pacote 1: entrou em nova celula e sensoriou paredes (descoberta).
+        if (g_maze.sensoriou()) {
+            const Labirinto::Posicao ps = g_maze.posicaoSensoriada();
+            const uint8_t w = g_maze.paredes(ps); // bits N=1,S=2,L=4,O=8 == campo 'w'
+            // Loga EXATAMENTE o que vai no pacote 1, com as paredes decodificadas,
+            // para comparar com o labirinto real e com o desenho do web.
+            ESP_LOGW(TAG, "TELE p1 -> x=%u y=%u w=%u [N=%d S=%d L=%d O=%d]",
+                     (unsigned)ps.x, (unsigned)ps.y, (unsigned)w,
+                     (w & Labirinto::ParedeNorte) ? 1 : 0,
+                     (w & Labirinto::ParedeSul)   ? 1 : 0,
+                     (w & Labirinto::ParedeLeste) ? 1 : 0,
+                     (w & Labirinto::ParedeOeste) ? 1 : 0);
+            if (g_wifi_ok) enviar_movimentacao(BACKEND_URL, telemetria_ts(), ps.x, ps.y, w);
+        }
+
+        // Pacote 2: rota otima ja conhecida, logo antes da corrida rapida.
+        if (!g_rota_enviada && r == Labirinto::Resultado::RetornouAoInicio) {
+            g_rota_enviada  = true;
+            g_fastrun_t0_ms = esp_timer_get_time() / 1000;
+            if (g_wifi_ok) {
+                static Labirinto::Posicao rota_buf[Labirinto::kMaxCaminho];
+                const uint16_t nrota =
+                    g_maze.rotaOtima(rota_buf, Labirinto::kMaxCaminho);
+                enviar_rota_otimizada(BACKEND_URL, telemetria_ts(), rota_buf, nrota);
+            }
+        }
+
+        if (r == Labirinto::Resultado::FastRunCompleto) {
+            ESP_LOGI(TAG, "=== LABIRINTO CONCLUIDO ===");
+            // Pacote 3: fim com sucesso + velocidade media medida na fast run.
+            float v_med = 0.0f;
+            const int64_t dt_ms = (esp_timer_get_time() / 1000) - g_fastrun_t0_ms;
+            if (g_fastrun_t0_ms > 0 && dt_ms > 0) {
+                v_med = (g_fastrun_tiles * TILE_M) / (dt_ms / 1000.0f);
+            }
+            if (g_wifi_ok) {
+                enviar_fim_corrida(BACKEND_URL, telemetria_ts(), true, v_med, g_bateria_pct);
+            }
+            break;
+        }
+        if (r == Labirinto::Resultado::Bloqueado) {
+            ESP_LOGE(TAG, "Bloqueado: sem movimento possivel. Parando.");
+            // Pacote 3: fim sem sucesso.
+            if (g_wifi_ok) {
+                enviar_fim_corrida(BACKEND_URL, telemetria_ts(), false, 0.0f, g_bateria_pct);
+            }
+            break;
+        }
+    }
+
+    motores_para();
+    while (true) vTaskDelay(pdMS_TO_TICKS(1000)); // idle
 }
