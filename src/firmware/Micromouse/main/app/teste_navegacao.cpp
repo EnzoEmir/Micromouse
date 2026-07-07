@@ -10,12 +10,14 @@
  *         ToF frontal     : parada de seguranca + recuo/recentralizacao.
  *         Giroscopio (MPU): fecha o giro de 90/180 graus.
  *
- * FLUXO DA COMPETICAO (por botoes; ver pins.hpp):
- *   1. Botao 2 (D23) cicla o tamanho do labirinto (4x4 <-> 8x8; o GOAL segue).
- *   2. Botao 1 (D19) confirma: calibra o gyro e LARGA o mapeamento.
+ * FLUXO DA COMPETICAO (UM botao, D19; ver pins.hpp). O botao de tamanho (D23)
+ * esta com defeito de hardware, entao o D19 acumula as funcoes pelo tipo de
+ * acionamento:
+ *   1. TOQUE CURTO no D19 cicla o tamanho do labirinto (4x4 <-> 8x8; GOAL segue).
+ *   2. SEGURAR o D19 (>=0.7 s) confirma: calibra o gyro e LARGA o mapeamento.
  *   3. Ao alcancar o centro, o robo PARA la (nao volta sozinho a largada).
- *   4. Reposicione o robo na largada apontando para o NORTE e aperte o
- *      botao 1 de novo: comeca a corrida rapida (fast run) com PWM_FAST.
+ *   4. Reposicione o robo na largada apontando para o NORTE e de um TOQUE no
+ *      D19: comeca a corrida rapida (fast run) com PWM_FAST.
  *
  * ONDE AJUSTAR O MOVIMENTO (bloco PARAMETROS abaixo):
  *   - Distancia por celula ....... COUNTS_PER_TILE
@@ -979,27 +981,40 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Conectando ao Wi-Fi '%s' em background...", WIFI_SSID);
     wifi_init_sta(WIFI_SSID, WIFI_PASS, /*timeout_ms=*/0);
 
-    // 5.2) Botoes de controle (D19 = largada/fast run, D23 = tamanho).
+    // 5.2) Botao de controle. So o D19 e usado: o D23 (tamanho) esta com defeito
+    //      de hardware, entao o D19 faz tudo (toque curto = tamanho, segurar =
+    //      largada; ver passo 6). botao_size fica declarado como reserva para o
+    //      caso do hardware do D23 ser consertado depois.
     Botao botao_start(BUTTON_START_PIN);
     Botao botao_size(BUTTON_SIZE_PIN);
     botao_start.init();
     botao_size.init();
+    (void)botao_size; // atualmente sem uso (D23 defeituoso)
 
-    // 6) Selecao do tamanho + largada por botao. O botao 2 cicla 4x4/8x8 (o
-    //    GOAL acompanha: {1,1} / {3,3}); o botao 1 confirma e da a largada.
+    // 6) Selecao do tamanho + largada com UM UNICO botao (D19), porque o botao
+    //    de tamanho (D23) esta com defeito de hardware. O D19 acumula as duas
+    //    funcoes pelo tipo de acionamento:
+    //       TOQUE CURTO    -> cicla o tamanho 4x4 <-> 8x8 (GOAL acompanha: {1,1}/{3,3}).
+    //       SEGURAR >=0.7s -> confirma o tamanho e LARGA o mapeamento.
     int idx_lab = 0;
     {
         const int t0 = (int)kOpcoesLab[idx_lab].tamanho;
-        ESP_LOGI(TAG, "Aguardando largada: botao2 (D23) tamanho [%dx%d], "
-                      "botao1 (D19) inicia o mapeamento.", t0, t0);
+        ESP_LOGI(TAG, "Aguardando largada: TOQUE CURTO no botao (D19) cicla o "
+                      "tamanho [%dx%d]; SEGURE (>=0.7s) para iniciar o mapeamento.",
+                 t0, t0);
     }
-    while (!botao_start.clicado()) {
-        if (botao_size.clicado()) {
+    while (true) {
+        const Botao::Clique c = botao_start.clique();
+        if (c == Botao::Clique::Curto) {
             idx_lab = (idx_lab + 1) % kNumOpcoesLab;
             const int t = (int)kOpcoesLab[idx_lab].tamanho;
             ESP_LOGI(TAG, "Tamanho selecionado: %dx%d (goal {%u,%u})", t, t,
                      (unsigned)kOpcoesLab[idx_lab].goal.x,
                      (unsigned)kOpcoesLab[idx_lab].goal.y);
+        } else if (c == Botao::Clique::Longo) {
+            const int t = (int)kOpcoesLab[idx_lab].tamanho;
+            ESP_LOGI(TAG, "Largada confirmada (%dx%d): iniciando mapeamento.", t, t);
+            break;
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
