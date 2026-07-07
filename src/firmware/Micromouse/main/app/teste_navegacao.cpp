@@ -10,12 +10,19 @@
  *         ToF frontal     : parada de seguranca + recuo/recentralizacao.
  *         Giroscopio (MPU): fecha o giro de 90/180 graus.
  *
+ * FLUXO DA COMPETICAO (por botoes; ver pins.hpp):
+ *   1. Botao 2 (D23) cicla o tamanho do labirinto (4x4 <-> 8x8; o GOAL segue).
+ *   2. Botao 1 (D19) confirma: calibra o gyro e LARGA o mapeamento.
+ *   3. Ao alcancar o centro, o robo PARA la (nao volta sozinho a largada).
+ *   4. Reposicione o robo na largada apontando para o NORTE e aperte o
+ *      botao 1 de novo: comeca a corrida rapida (fast run) com PWM_FAST.
+ *
  * ONDE AJUSTAR O MOVIMENTO (bloco PARAMETROS abaixo):
  *   - Distancia por celula ....... COUNTS_PER_TILE
  *   - Angulo do giro (90 graus) .. ALVO_GRAUS + MARGEM_PARADA_GRAUS
- *   - Velocidade de avanco ....... PWM_DRIVE
+ *   - Velocidade de avanco ....... PWM_DRIVE (exploracao) / PWM_FAST (corrida)
  *   - Forca da centralizacao ..... KP_CENTRO / CORR_MAX
- *   - Largada/objetivo do maze ... START / GOAL / TAMANHO_LAB
+ *   - Largada/objetivo do maze ... START / kOpcoesLab (tamanho+goal por botao)
  *
  * Sensores (mapeamento fisico real, descoberto na bancada):
  *   FRONTAL  = rotulo FRONT_LEFT  (addr 0x2B)
@@ -48,6 +55,7 @@
 #include "battery/battery.hpp"
 #include "vl53l0x/IV_Vl53l0x.hpp"
 #include "maze/maze.hpp"
+#include "botoes/botoes.hpp"
 
 #include "nvs_flash.h"
 #include "wifi.hpp"
@@ -59,15 +67,27 @@ namespace {
 
 // =====================  PARAMETROS  =====================
 
+// BANCADA: 1 = roda SO o self-test de motor (aciona esquerdo e direito
+// separadamente, frente/re, com log claro) e NAO navega. Use para isolar um
+// canal de motor morto vs. sensor/logica. Volte para 0 na competicao.
+#define MOTOR_SELFTEST 0
+
 constexpr int   PWM_MAX     = 1023;                  // resolucao 10 bits
 
 // --- Avanco ---
 // PWM_DRIVE = VELOCIDADE de avanco (fracao do PWM_MAX). Aumentar = mais rapido.
-constexpr int   PWM_DRIVE   = (int)(PWM_MAX * 0.25f);// 25% do PWM
-constexpr float TRIM_R      = 1.05f;                 // compensa motor direito mais fraco
-constexpr int   PWM_DRIVE_R = (int)(PWM_DRIVE * TRIM_R) > PWM_MAX
-                                  ? PWM_MAX : (int)(PWM_DRIVE * TRIM_R);
-constexpr int   ESPERA_MS   = 3000;                  // tempo para tirar a mao
+// PWM_FAST  = velocidade da corrida rapida (usada so na fase FastRun do maze).
+constexpr int   PWM_DRIVE   = (int)(PWM_MAX * 0.18f);// 18% do PWM (exploracao)
+constexpr int   PWM_FAST    = PWM_DRIVE;             // corrida rapida = mapeamento
+// Compensacao da ASSIMETRIA dos motores (bancada: motor ESQUERDO bem mais forte
+// que o DIREITO). Feed-forward aplicado ao PWM base: FREIA o lado forte
+// (TRIM_L<1) e REFORCA o lado fraco (TRIM_R>1), deixando as duas rodas com
+// velocidade parecida. E so o "chute inicial": o controle por encoder
+// (KP_RETA/CORR_MAX) fecha o resto. AJUSTE FINO na bancada:
+//   - se ainda PUXA PARA A DIREITA (esquerdo forte): aumente TRIM_R / diminua TRIM_L.
+//   - se passar a PUXAR PARA A ESQUERDA (corrigiu demais): o contrario.
+constexpr float TRIM_L      = 0.82f;                 // freia o motor esquerdo (forte)
+constexpr float TRIM_R      = 1.20f;                 // reforca o motor direito (fraco)
 
 // --- ToF frontal ---
 constexpr float BIAS_FRENTE   = 69.0f;   // lida - real (caracterizado)
@@ -78,6 +98,7 @@ constexpr int   CONFIRMACOES  = 2;        // leituras seguidas p/ confirmar pare
 constexpr float TARGET_MM   = 25.0f;     // distancia frontal final desejada
 constexpr float TOL_MM      = 5.0f;      // faixa aceitavel
 constexpr int   PWM_AJUSTE  = PWM_MAX / 3;
+constexpr int   PWM_AJUSTE_L = (int)(PWM_AJUSTE * TRIM_L); // esquerdo freado
 constexpr int   PWM_AJUSTE_R = (int)(PWM_AJUSTE * TRIM_R) > PWM_MAX
                                   ? PWM_MAX : (int)(PWM_AJUSTE * TRIM_R);
 constexpr int   PULSO_MS    = 70;
@@ -99,8 +120,9 @@ constexpr float PAREDE_ALVO_MM    = 50.0f;  // distancia desejada de cada parede
 
 // --- Distancia de 1 CELULA (medida pelos encoders, PCNT quadratura x4) ---
 // COUNTS_PER_TILE = pulsos de encoder por celula. Aumentar = anda MAIS por
-// celula; diminuir = anda MENOS. (~57 pulsos/cm; 950 ~= 18 cm nesta bancada).
-constexpr long    COUNTS_PER_TILE = 950;
+// celula; diminuir = anda MENOS. (~57 pulsos/cm; ~1065 ~= 18 cm nesta bancada).
+// Parava ~2 cm curto do centro do tile -> +115 pulsos (950 -> 1065).
+constexpr long    COUNTS_PER_TILE = 1065;
 constexpr float   FRENTE_LIVRE_MM = 120.0f;   // df acima disso = frente ABERTA (sem parede)
 constexpr int64_t TILE_TIMEOUT_US = 5000000;  // trava de seguranca por tile (5 s)
 
@@ -109,9 +131,9 @@ constexpr int64_t TILE_TIMEOUT_US = 5000000;  // trava de seguranca por tile (5 
 // corr>0 => acelera esquerda / freia direita => corrige desvio para a esquerda.
 // Centralizando de menos: AUMENTE KP_CENTRO e/ou CORR_MAX. Se serpentear (oscila
 // entre as paredes): DIMINUA KP_CENTRO ou reduza FILTRO_CORR.
-constexpr float KP_RETA      = 0.40f;    // ganho do reto por encoder (por pulso de dif L/R)
+constexpr float KP_RETA      = 0.60f;    // ganho do reto por encoder (por pulso de dif L/R)
 constexpr float KP_CENTRO    = 0.50f;    // ganho da centralizacao por ToF (por mm de erro)
-constexpr int   CORR_MAX     = 40;       // teto da correcao (evita puxar demais)
+constexpr int   CORR_MAX     = 100;      // teto da correcao (alto p/ vencer a assimetria dos motores)
 constexpr float FILTRO_CORR  = 0.20f;    // suavizacao da correcao (0..1; maior = responde mais rapido)
 constexpr float ZONA_MORTA_MM = 8.0f;    // ignora erros laterais menores que isto
 
@@ -140,18 +162,28 @@ constexpr int     SETTLE_MS           = 400;
 constexpr int64_t GIRO_TIMEOUT_US     = 8000000; // trava de seguranca por giro
 
 // --- Labirinto (flood-fill) ---
-// GOAL do flood-fill e uma celula UNICA; para um bloco central 2x2 aponte para
-// uma das celulas do bloco.
-constexpr Labirinto::Tamanho TAMANHO_LAB = Labirinto::Tamanho::k4x4; // k4x4 / k8x8
+// O tamanho e escolhido em campo pelo botao 2 (D23), que cicla as opcoes
+// abaixo. O GOAL (celula do bloco central 2x2) acompanha o tamanho:
+// 4x4 -> {1,1}; 8x8 -> {3,3}. GOAL do flood-fill e uma celula UNICA; para um
+// bloco central 2x2 aponte para uma das celulas do bloco.
+struct OpcaoLabirinto {
+    Labirinto::Tamanho tamanho;
+    Labirinto::Posicao goal;
+};
+constexpr OpcaoLabirinto kOpcoesLab[] = {
+    {Labirinto::Tamanho::k4x4, {1, 1}},
+    {Labirinto::Tamanho::k8x8, {3, 3}},
+};
+constexpr int kNumOpcoesLab = sizeof(kOpcoesLab) / sizeof(kOpcoesLab[0]);
 constexpr Labirinto::Posicao START = {0, 0};   // celula de largada
-constexpr Labirinto::Posicao GOAL  = {1, 1};   // <<< celula objetivo (ajuste ao seu labirinto)
 // A largada assume a frente do robo apontando para NORTE (+y). A direita fica
 // LESTE (+x), a esquerda OESTE. O modulo Labirinto tambem forca heading=Norte.
 
 // --- Telemetria / Wi-Fi (envio para o servidor web) ---
-const char* WIFI_SSID   = "NOME_DO_SEU_WIFI";
-const char* WIFI_PASS   = "SENHA_DO_SEU_WIFI";
-const char* BACKEND_URL = "http://192.168.1.50:8000/api/telemetria/pacote";
+// >>> PREENCHER NO DIA DA COMPETICAO: SSID/senha do hotspot e IP do servidor <<<
+const char* WIFI_SSID   = "dudaa28-Latitude-3420";
+const char* WIFI_PASS   = "ck0fQGxy";
+const char* BACKEND_URL = "http://10.42.0.1:8000/api/telemetria/pacote";
 constexpr int   HEARTBEAT_MS   = 1500;   // periodo do heartbeat (tipo 4)
 constexpr float TEMP_CRITICA_C = 60.0f;  // limiar do alerta critico (tipo 5)
 constexpr float TILE_M         = 0.18f;  // 1 tile = 18 cm (ver COUNTS_PER_TILE)
@@ -171,12 +203,15 @@ Labirinto g_maze;
 Labirinto::Direcao g_heading = Labirinto::Direcao::Norte; // orientacao FISICA
 
 // --- Telemetria ---
-bool    g_wifi_ok       = false;       // Wi-Fi conectado (habilita os envios)
+// O Wi-Fi conecta em BACKGROUND (wifi_init_sta nao-bloqueante); cada envio
+// consulta wifi_is_connected() na hora. Se a conexao chegar depois da largada,
+// a task de heartbeat envia a config inicial (tipo 0) atrasada.
 int64_t g_t0_ms         = 0;           // instante de inicio da corrida (ms)
 volatile int   g_bateria_pct  = 100;   // cache da bateria (%), atualizado pela nav
 volatile float g_temp_c       = 25.0f; // cache da temperatura do MPU (C)
 volatile bool  g_temp_critica = false; // ficou acima do limiar critico
-bool    g_rota_enviada  = false;       // pacote 2 (rota) ja foi enviado
+volatile bool  g_config_enviada = false; // pacote 0 (config) ja foi enviado
+volatile int   g_dimensao     = 4;     // tamanho escolhido (p/ config atrasada)
 int     g_fastrun_tiles = 0;           // tiles andados durante a corrida rapida
 int64_t g_fastrun_t0_ms = 0;           // inicio da corrida rapida (ms)
 
@@ -457,7 +492,16 @@ void atualizar_temp() {
 // (le globais em cache) -> nao toca no I2C, nao concorre com a navegacao.
 void tarefa_heartbeat(void*) {
     while (true) {
-        if (g_wifi_ok) enviar_heartbeat(BACKEND_URL, telemetria_ts(), g_bateria_pct);
+        if (wifi_is_connected()) {
+            // Wi-Fi conectou depois da largada: manda a config (tipo 0)
+            // atrasada antes do primeiro heartbeat.
+            if (!g_config_enviada) {
+                g_config_enviada = true;
+                enviar_configuracao_inicial(BACKEND_URL, telemetria_ts(),
+                                            g_dimensao, g_bateria_pct);
+            }
+            enviar_heartbeat(BACKEND_URL, telemetria_ts(), g_bateria_pct);
+        }
         vTaskDelay(pdMS_TO_TICKS(HEARTBEAT_MS));
     }
 }
@@ -521,9 +565,18 @@ enum class Avanco {
     PAREDE,    // encostou numa parede antes de completar a celula
 };
 
+// PWM base do avanco: PWM_FAST na corrida rapida (fase FastRun do maze),
+// PWM_DRIVE no resto (exploracao/refino/retorno).
+int pwmAvanco() {
+    return (g_maze.fase() == Labirinto::Fase::FastRun) ? PWM_FAST : PWM_DRIVE;
+}
+
 // Anda EXATAMENTE 1 tile contando PULSOS de encoder. Mantem linha reta pela
 // diferenca L/R dos encoders e adiciona centralizacao ToF suave (hibrido).
 Avanco andarUmTile() {
+    const int pwm_base   = pwmAvanco();
+    const int pwm_base_l = std::min(PWM_MAX, (int)(pwm_base * TRIM_L));
+    const int pwm_base_r = std::min(PWM_MAX, (int)(pwm_base * TRIM_R));
     enc_zerar();
     dir_frente();
     const int64_t t0 = esp_timer_get_time();
@@ -593,8 +646,8 @@ Avanco andarUmTile() {
         if (corr < -CORR_MAX) corr = -CORR_MAX;
         corr_filt += FILTRO_CORR * (corr - corr_filt);
 
-        int dl = PWM_DRIVE   + (int)corr_filt; // corr>0 => acelera esquerda
-        int dr = PWM_DRIVE_R - (int)corr_filt;
+        int dl = pwm_base_l + (int)corr_filt; // corr>0 => acelera esquerda
+        int dr = pwm_base_r - (int)corr_filt;
         dl = std::max(0, std::min(dl, PWM_MAX));
         dr = std::max(0, std::min(dr, PWM_MAX));
         pwm_left(dl); pwm_right(dr);
@@ -630,7 +683,7 @@ void recentralizarFrontal() {
         if (std::fabs(err) <= TOL_MM) { ESP_LOGI(TAG, "frontal ok: %.0f mm", d); return; }
 
         if (err < 0.0f) dir_re(); else dir_frente();
-        pwm_left(PWM_AJUSTE); pwm_right(PWM_AJUSTE_R);
+        pwm_left(PWM_AJUSTE_L); pwm_right(PWM_AJUSTE_R);
         vTaskDelay(pdMS_TO_TICKS(PULSO_MS));
         motores_para();
         vTaskDelay(pdMS_TO_TICKS(ASSENTA_MS));
@@ -649,7 +702,7 @@ void folgaParaPivo() {
         if (df < 0.0f)              return;   // sem parede/leitura: nada a fazer
         if (df >= PIVO_FOLGA_MM)    return;   // ja tem folga suficiente
         dir_re();
-        pwm_left(PWM_AJUSTE); pwm_right(PWM_AJUSTE_R);
+        pwm_left(PWM_AJUSTE_L); pwm_right(PWM_AJUSTE_R);
         vTaskDelay(pdMS_TO_TICKS(PULSO_MS));
         motores_para();
         vTaskDelay(pdMS_TO_TICKS(ASSENTA_MS));
@@ -713,6 +766,22 @@ void avancar() {
     vTaskDelay(pdMS_TO_TICKS(120)); // pequena pausa antes de sensoriar/girar
 }
 
+// Atualiza os caches (bateria/temperatura) e checa o alerta critico. Se a
+// temperatura estourou o limiar: para os motores, envia os pacotes 5 (alerta)
+// e 3 (fim sem sucesso) e retorna true -> abortar a corrida.
+bool abortarPorTemperatura() {
+    atualizar_bateria();
+    atualizar_temp();
+    if (!g_temp_critica) return false;
+    motores_para();
+    ESP_LOGE(TAG, "TEMP CRITICA %.1f C -> abortando corrida.", g_temp_c);
+    if (wifi_is_connected()) {
+        enviar_alerta_temperatura(BACKEND_URL, telemetria_ts(), g_temp_c);          // tipo 5
+        enviar_fim_corrida(BACKEND_URL, telemetria_ts(), false, 0.0f, g_bateria_pct); // tipo 3
+    }
+    return true;
+}
+
 const char *nome_resultado(Labirinto::Resultado r) {
     switch (r) {
         case Labirinto::Resultado::EmProgresso:      return "EmProgresso";
@@ -725,11 +794,57 @@ const char *nome_resultado(Labirinto::Resultado r) {
     }
 }
 
+#if MOTOR_SELFTEST
+// Bancada: aciona UM motor de cada vez (frente/re), independente de
+// sensores/gyro/navegacao, para isolar canal esquerdo vs. direito. Enquanto um
+// lado gira, meca com o multimetro: PWM_PIN deve ter onda ~40%, um dos IN em
+// 3V3 e o outro em 0 V, e a saida da ponte H deve ter tensao diferencial. Se os
+// GPIOs chaveiam certo mas o motor nao gira -> hardware (ponte H / solda / fio).
+// Nunca retorna.
+void motorSelfTest() {
+    initMotores();
+    motores_para();
+    const int pwm = (int)(PWM_MAX * 0.40f);
+    ESP_LOGW(TAG, "=== MOTOR SELFTEST === ESQ: PWM=GPIO%d IN1=GPIO%d IN2=GPIO%d | "
+                  "DIR: PWM=GPIO%d IN1=GPIO%d IN2=GPIO%d",
+             (int)MOTOR_LEFT_PWM_PIN,  (int)MOTOR_LEFT_IN1_PIN,  (int)MOTOR_LEFT_IN2_PIN,
+             (int)MOTOR_RIGHT_PWM_PIN, (int)MOTOR_RIGHT_IN1_PIN, (int)MOTOR_RIGHT_IN2_PIN);
+
+    while (true) {
+        ESP_LOGW(TAG, "[SELFTEST] ESQUERDO frente (PWM %d)", pwm);
+        dir_frente(); pwm_right(0); pwm_left(pwm);
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        motores_para(); vTaskDelay(pdMS_TO_TICKS(500));
+
+        ESP_LOGW(TAG, "[SELFTEST] ESQUERDO re     (PWM %d)", pwm);
+        dir_re(); pwm_right(0); pwm_left(pwm);
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        motores_para(); vTaskDelay(pdMS_TO_TICKS(1000));
+
+        ESP_LOGW(TAG, "[SELFTEST] DIREITO  frente (PWM %d)", pwm);
+        dir_frente(); pwm_left(0); pwm_right(pwm);
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        motores_para(); vTaskDelay(pdMS_TO_TICKS(500));
+
+        ESP_LOGW(TAG, "[SELFTEST] DIREITO  re     (PWM %d)", pwm);
+        dir_re(); pwm_left(0); pwm_right(pwm);
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        motores_para(); vTaskDelay(pdMS_TO_TICKS(1500));
+
+        ESP_LOGW(TAG, "[SELFTEST] --- ciclo completo; repetindo ---");
+    }
+}
+#endif // MOTOR_SELFTEST
+
 } // namespace
 
 extern "C" void app_main(void) {
     vTaskDelay(pdMS_TO_TICKS(200));
     ESP_LOGI(TAG, "=== Navegacao FLOOD-FILL + ENCODERS ===");
+
+#if MOTOR_SELFTEST
+    motorSelfTest(); // bancada: nunca retorna; nao entra na navegacao
+#endif
 
     // 1) Bateria (sobe o barramento I2C compartilhado).
     if (!g_battery.init()) {
@@ -768,18 +883,42 @@ extern "C" void app_main(void) {
     initMotores();
     motores_para();
 
-    // 5.1) Wi-Fi + telemetria. wifi_init_sta BLOQUEIA ate conectar (o modulo nao
-    //      tem timeout); sem AP disponivel o robo espera aqui. Conectando, liga
-    //      os envios. A navegacao roda igual mesmo se o Wi-Fi cair depois.
+    // 5.1) Wi-Fi NAO-bloqueante: dispara a conexao e segue o boot. Cada envio
+    //      consulta wifi_is_connected() na hora; a navegacao roda igual sem AP
+    //      (a reconexao continua em background se a rede cair/voltar).
     inicializar_nvs();
-    ESP_LOGI(TAG, "Conectando ao Wi-Fi '%s'...", WIFI_SSID);
-    wifi_init_sta(WIFI_SSID, WIFI_PASS);
-    g_wifi_ok = wifi_is_connected();
-    if (g_wifi_ok) ESP_LOGI(TAG, "Wi-Fi OK. Telemetria -> %s", BACKEND_URL);
-    else           ESP_LOGW(TAG, "Sem Wi-Fi; seguindo SEM telemetria.");
+    ESP_LOGI(TAG, "Conectando ao Wi-Fi '%s' em background...", WIFI_SSID);
+    wifi_init_sta(WIFI_SSID, WIFI_PASS, /*timeout_ms=*/0);
 
-    // 6) Labirinto (flood-fill).
-    g_maze.configurar(TAMANHO_LAB);
+    // 5.2) Botoes de controle (D19 = largada/fast run, D23 = tamanho).
+    Botao botao_start(BUTTON_START_PIN);
+    Botao botao_size(BUTTON_SIZE_PIN);
+    botao_start.init();
+    botao_size.init();
+
+    // 6) Selecao do tamanho + largada por botao. O botao 2 cicla 4x4/8x8 (o
+    //    GOAL acompanha: {1,1} / {3,3}); o botao 1 confirma e da a largada.
+    int idx_lab = 0;
+    {
+        const int t0 = (int)kOpcoesLab[idx_lab].tamanho;
+        ESP_LOGI(TAG, "Aguardando largada: botao2 (D23) tamanho [%dx%d], "
+                      "botao1 (D19) inicia o mapeamento.", t0, t0);
+    }
+    while (!botao_start.clicado()) {
+        if (botao_size.clicado()) {
+            idx_lab = (idx_lab + 1) % kNumOpcoesLab;
+            const int t = (int)kOpcoesLab[idx_lab].tamanho;
+            ESP_LOGI(TAG, "Tamanho selecionado: %dx%d (goal {%u,%u})", t, t,
+                     (unsigned)kOpcoesLab[idx_lab].goal.x,
+                     (unsigned)kOpcoesLab[idx_lab].goal.y);
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    // 6.1) Labirinto (flood-fill) com o tamanho/goal escolhidos.
+    const Labirinto::Posicao GOAL = kOpcoesLab[idx_lab].goal;
+    g_dimensao = (int)kOpcoesLab[idx_lab].tamanho;
+    g_maze.configurar(kOpcoesLab[idx_lab].tamanho);
     Labirinto::InterfaceRobo robo;
     robo.virarPara = virarPara;
     robo.avancar   = avancar;
@@ -790,35 +929,29 @@ extern "C" void app_main(void) {
              (int)g_maze.tamanho(), (int)g_maze.tamanho(),
              (unsigned)START.x, (unsigned)START.y, (unsigned)GOAL.x, (unsigned)GOAL.y);
 
-    // 7) Largada + calibracao do gyro (robo PARADO).
-    ESP_LOGI(TAG, "Largada em %d ms... tire a mao e mantenha PARADO.", ESPERA_MS);
-    vTaskDelay(pdMS_TO_TICKS(ESPERA_MS));
-    if (g_mpu_ok) { ESP_LOGI(TAG, "Calibrando gyro..."); calibrar_bias_z(); }
+    // 7) Calibracao do gyro logo apos o botao (robo PARADO na largada).
+    if (g_mpu_ok) { ESP_LOGI(TAG, "Calibrando gyro (mantenha o robo parado)..."); calibrar_bias_z(); }
 
     // 7.1) Marco zero da corrida + pacote 0 (Config Inicial) + task de heartbeat.
+    //      Se o Wi-Fi ainda nao conectou, a tarefa_heartbeat envia a config
+    //      atrasada assim que a conexao chegar.
     g_t0_ms = esp_timer_get_time() / 1000;
     atualizar_bateria();
     atualizar_temp();
-    if (g_wifi_ok) {
+    if (wifi_is_connected()) {
+        g_config_enviada = true;
         enviar_configuracao_inicial(BACKEND_URL, telemetria_ts(),
-                                    (int)g_maze.tamanho(), g_bateria_pct); // tipo 0
+                                    g_dimensao, g_bateria_pct); // tipo 0
     }
     xTaskCreate(tarefa_heartbeat, "heartbeat", 4096, nullptr, 3, nullptr); // tipo 4
 
-    // 8) Ciclo do flood-fill: sensoria paredes -> passo (que gira e avanca).
+    // 8) MAPEAMENTO: sensoria paredes -> passo (que gira e avanca) ate alcancar
+    //    o centro. O robo PARA no centro (nao volta sozinho a largada).
+    ESP_LOGI(TAG, "=== MAPEAMENTO (ate o centro) ===");
+    bool mapeou = false;
+    bool abortou = false;
     while (true) {
-        // Atualiza caches (bateria + temperatura) e checa o alerta critico.
-        atualizar_bateria();
-        atualizar_temp();
-        if (g_temp_critica) {
-            motores_para();
-            ESP_LOGE(TAG, "TEMP CRITICA %.1f C -> abortando corrida.", g_temp_c);
-            if (g_wifi_ok) {
-                enviar_alerta_temperatura(BACKEND_URL, telemetria_ts(), g_temp_c);          // tipo 5
-                enviar_fim_corrida(BACKEND_URL, telemetria_ts(), false, 0.0f, g_bateria_pct); // tipo 3
-            }
-            break;
-        }
+        if (abortarPorTemperatura()) { abortou = true; break; }
 
         const Labirinto::LeituraSensores s = lerParedes();
         const Labirinto::Resultado r = g_maze.passo(s);
@@ -830,49 +963,85 @@ extern "C" void app_main(void) {
         if (g_maze.sensoriou()) {
             const Labirinto::Posicao ps = g_maze.posicaoSensoriada();
             const uint8_t w = g_maze.paredes(ps); // bits N=1,S=2,L=4,O=8 == campo 'w'
-            // Loga EXATAMENTE o que vai no pacote 1, com as paredes decodificadas,
-            // para comparar com o labirinto real e com o desenho do web.
-            ESP_LOGW(TAG, "TELE p1 -> x=%u y=%u w=%u [N=%d S=%d L=%d O=%d]",
+            // Debug: o conteudo exato do pacote 1 com as paredes decodificadas
+            // (subir para LOGI/LOGW so quando precisar conferir com o web).
+            ESP_LOGD(TAG, "TELE p1 -> x=%u y=%u w=%u [N=%d S=%d L=%d O=%d]",
                      (unsigned)ps.x, (unsigned)ps.y, (unsigned)w,
                      (w & Labirinto::ParedeNorte) ? 1 : 0,
                      (w & Labirinto::ParedeSul)   ? 1 : 0,
                      (w & Labirinto::ParedeLeste) ? 1 : 0,
                      (w & Labirinto::ParedeOeste) ? 1 : 0);
-            if (g_wifi_ok) enviar_movimentacao(BACKEND_URL, telemetria_ts(), ps.x, ps.y, w);
-        }
-
-        // Pacote 2: rota otima ja conhecida, logo antes da corrida rapida.
-        if (!g_rota_enviada && r == Labirinto::Resultado::RetornouAoInicio) {
-            g_rota_enviada  = true;
-            g_fastrun_t0_ms = esp_timer_get_time() / 1000;
-            if (g_wifi_ok) {
-                static Labirinto::Posicao rota_buf[Labirinto::kMaxCaminho];
-                const uint16_t nrota =
-                    g_maze.rotaOtima(rota_buf, Labirinto::kMaxCaminho);
-                enviar_rota_otimizada(BACKEND_URL, telemetria_ts(), rota_buf, nrota);
+            if (wifi_is_connected()) {
+                enviar_movimentacao(BACKEND_URL, telemetria_ts(), ps.x, ps.y, w);
             }
         }
 
-        if (r == Labirinto::Resultado::FastRunCompleto) {
-            ESP_LOGI(TAG, "=== LABIRINTO CONCLUIDO ===");
-            // Pacote 3: fim com sucesso + velocidade media medida na fast run.
-            float v_med = 0.0f;
-            const int64_t dt_ms = (esp_timer_get_time() / 1000) - g_fastrun_t0_ms;
-            if (g_fastrun_t0_ms > 0 && dt_ms > 0) {
-                v_med = (g_fastrun_tiles * TILE_M) / (dt_ms / 1000.0f);
-            }
-            if (g_wifi_ok) {
-                enviar_fim_corrida(BACKEND_URL, telemetria_ts(), true, v_med, g_bateria_pct);
-            }
+        if (r == Labirinto::Resultado::AlcancouObjetivo) {
+            motores_para();
+            mapeou = true;
+            ESP_LOGI(TAG, "=== Centro alcancado: mapeamento concluido. Robo parado no centro. ===");
             break;
         }
         if (r == Labirinto::Resultado::Bloqueado) {
             ESP_LOGE(TAG, "Bloqueado: sem movimento possivel. Parando.");
             // Pacote 3: fim sem sucesso.
-            if (g_wifi_ok) {
+            if (wifi_is_connected()) {
                 enviar_fim_corrida(BACKEND_URL, telemetria_ts(), false, 0.0f, g_bateria_pct);
             }
             break;
+        }
+    }
+
+    // 9) FAST RUN manual: reposicione o robo na LARGADA apontando para o NORTE
+    //    e aperte o botao 1. O mapa aprendido e mantido (prepararFastRun).
+    if (mapeou && !abortou) {
+        ESP_LOGI(TAG, "Reposicione o robo na largada {0,0} apontando para o NORTE "
+                      "e aperte o botao 1 (D19) para a corrida rapida.");
+        while (!botao_start.clicado()) vTaskDelay(pdMS_TO_TICKS(10));
+
+        g_maze.prepararFastRun();               // pos=inicio, heading=Norte, mapa intacto
+        g_heading = Labirinto::Direcao::Norte;  // robo fisicamente reposicionado p/ NORTE
+        g_fastrun_tiles = 0;
+        g_fastrun_t0_ms = esp_timer_get_time() / 1000;
+
+        // Pacote 2: rota otima conhecida no inicio da corrida rapida.
+        if (wifi_is_connected()) {
+            static Labirinto::Posicao rota_buf[Labirinto::kMaxCaminho];
+            const uint16_t nrota = g_maze.rotaOtima(rota_buf, Labirinto::kMaxCaminho);
+            enviar_rota_otimizada(BACKEND_URL, telemetria_ts(), rota_buf, nrota);
+        }
+
+        ESP_LOGI(TAG, "=== FAST RUN (PWM %d) ===", PWM_FAST);
+        while (true) {
+            if (abortarPorTemperatura()) break;
+
+            const Labirinto::LeituraSensores s = lerParedes();
+            const Labirinto::Resultado r = g_maze.passo(s);
+            const Labirinto::Posicao p = g_maze.posicao();
+            ESP_LOGI(TAG, "fastrun -> %s | pos {%u,%u}",
+                     nome_resultado(r), (unsigned)p.x, (unsigned)p.y);
+
+            if (r == Labirinto::Resultado::FastRunCompleto) {
+                ESP_LOGI(TAG, "=== LABIRINTO CONCLUIDO ===");
+                // Pacote 3: fim com sucesso + velocidade media da fast run.
+                float v_med = 0.0f;
+                const int64_t dt_ms = (esp_timer_get_time() / 1000) - g_fastrun_t0_ms;
+                if (dt_ms > 0) {
+                    v_med = (g_fastrun_tiles * TILE_M) / (dt_ms / 1000.0f);
+                }
+                if (wifi_is_connected()) {
+                    enviar_fim_corrida(BACKEND_URL, telemetria_ts(), true, v_med, g_bateria_pct);
+                }
+                break;
+            }
+            if (r == Labirinto::Resultado::Bloqueado) {
+                ESP_LOGE(TAG, "Bloqueado na fast run. Parando.");
+                // Pacote 3: fim sem sucesso.
+                if (wifi_is_connected()) {
+                    enviar_fim_corrida(BACKEND_URL, telemetria_ts(), false, 0.0f, g_bateria_pct);
+                }
+                break;
+            }
         }
     }
 

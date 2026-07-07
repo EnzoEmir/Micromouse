@@ -16,11 +16,10 @@
 #define BATTERY_REST_CURRENT_A  0.05f
 #define VOLTAGE_CORRECTION_ALPHA 0.01f
 
-// MOCK: o INA226 da PCB nao esta funcionando. Enquanto o hardware nao e
-// resolvido, retornamos valores fixos plausiveis para que os pacotes de
-// telemetria saiam com algum valor de bateria. Remover este bloco e
-// restaurar as leituras reais quando o INA226 voltar a funcionar.
-#define BATTERY_MOCK 1
+// MOCK da bateria: em 1, ignora o INA226 e usa valores fixos (apenas para
+// bancada com o hardware defeituoso). Em 0 (padrao), le o INA226 real; o
+// init() loga tensao/corrente iniciais para validar a leitura.
+#define BATTERY_MOCK 0
 #define BATTERY_MOCK_VOLTAGE_V  7.8f
 #define BATTERY_MOCK_CURRENT_A  0.30f
 #define BATTERY_MOCK_POWER_W    (BATTERY_MOCK_VOLTAGE_V * BATTERY_MOCK_CURRENT_A)
@@ -92,6 +91,16 @@ bool Battery::init() {
 
     soc_            = voltageToSOC(v0);
     last_update_us_ = esp_timer_get_time();
+
+    // Log de validacao da leitura real do INA226. Uma tensao ~0 V indica que o
+    // sensor nao respondeu (endereco errado, shunt, solda): conferir a PCB.
+    ESP_LOGI("Battery", "INA226 OK: V=%.2f V | I=%.3f A | P=%.2f W | SOC=%.0f%%",
+             v0, i0, p0, soc_);
+    if (v0 < 1.0f) {
+        ESP_LOGW("Battery", "Tensao lida (%.2f V) parece invalida; verifique o "
+                            "INA226 (endereco 0x%02X, shunt, conexoes)",
+                 v0, I2C_ADDR_INA226_BOARD);
+    }
     return true;
 #endif // BATTERY_MOCK
 }

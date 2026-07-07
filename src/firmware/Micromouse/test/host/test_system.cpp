@@ -239,10 +239,10 @@ TEST_CASE(sistema_missao_completa_em_labirinto_aberto) {
 
     ResultadoMissao rm = executarMissao(bk, tel, /*dt_us=*/1'000'000LL, /*max=*/8000);
 
-    // A missao terminou com sucesso no objetivo real do maze.
+    // A missao terminou com sucesso em uma celula do bloco central do maze.
     CHECK_EQ(rm.resultado, R::FastRunCompleto);
     CHECK_EQ(bk.lab.fase(), F::Concluido);
-    CHECK(bk.lab.posicao() == (P{4, 4}));
+    CHECK(bk.lab.ehCelulaCentro(bk.lab.posicao()));
 
     // O backend viu um inicio, varios movimentos, uma rota e um fim.
     const Pacote* prim = bk.be.primeiro();

@@ -39,6 +39,16 @@ void Labirinto::iniciar(Posicao inicio, Posicao objetivo) {
     posSensoriada_ = inicio;
 }
 
+void Labirinto::prepararFastRun() {
+    pos_ = inicio_;
+    heading_ = Direcao::Norte;
+    fase_ = Fase::FastRun;
+    alvoExploracao_ = kInvalida;
+    sensoriou_ = false;
+    posSensoriada_ = inicio_;
+    floodFillCentro();
+}
+
 void Labirinto::resetarMapa() {
     for (uint8_t y = 0; y < kMaxSize; ++y) {
         for (uint8_t x = 0; x < kMaxSize; ++x) {
@@ -246,6 +256,94 @@ uint16_t Labirinto::rotaOtima(Posicao *buffer, uint16_t capacidade) {
     return out;
 }
 
+void Labirinto::celulasCentro(Posicao out[4], uint8_t &n) const {
+    n = 0;
+    if (n_ < 2) {                 // labirinto minusculo: o "centro" e a celula 0,0
+        out[n++] = {0, 0};
+        return;
+    }
+    const uint8_t a = static_cast<uint8_t>(n_ / 2 - 1);
+    const uint8_t b = static_cast<uint8_t>(n_ / 2);
+    const Posicao cand[4] = {{a, a}, {b, a}, {a, b}, {b, b}};
+    for (uint8_t i = 0; i < 4; ++i) {
+        if (dentroDosLimites(cand[i])) out[n++] = cand[i];
+    }
+}
+
+bool Labirinto::ehCelulaCentro(Posicao p) const {
+    Posicao cs[4];
+    uint8_t nc = 0;
+    celulasCentro(cs, nc);
+    for (uint8_t i = 0; i < nc; ++i) {
+        if (cs[i] == p) return true;
+    }
+    return false;
+}
+
+bool Labirinto::algumCentroVisitado() const {
+    Posicao cs[4];
+    uint8_t nc = 0;
+    celulasCentro(cs, nc);
+    for (uint8_t i = 0; i < nc; ++i) {
+        if (visitada(cs[i])) return true;
+    }
+    return false;
+}
+
+void Labirinto::floodFillCentro() {
+    for (uint8_t y = 0; y < kMaxSize; ++y) {
+        for (uint8_t x = 0; x < kMaxSize; ++x) {
+            dist_[y][x] = kDistanciaInfinita;
+        }
+    }
+
+    Posicao cs[4];
+    uint8_t nc = 0;
+    celulasCentro(cs, nc);
+
+    Posicao fila[kMaxCaminho];
+    uint16_t head = 0;
+    uint16_t tail = 0;
+    for (uint8_t i = 0; i < nc; ++i) {
+        dist_[cs[i].y][cs[i].x] = 0;
+        fila[tail++] = cs[i];
+    }
+
+    const Direcao dirs[4] = {Direcao::Norte, Direcao::Leste, Direcao::Sul, Direcao::Oeste};
+    while (head < tail) {
+        const Posicao a = fila[head++];
+        const uint16_t nd = dist_[a.y][a.x] + 1;
+        for (uint8_t i = 0; i < 4; ++i) {
+            if (temParede(a, dirs[i])) continue;
+            const Posicao v = vizinho(a, dirs[i]);
+            if (dist_[v.y][v.x] > nd) {
+                dist_[v.y][v.x] = nd;
+                fila[tail++] = v;
+            }
+        }
+    }
+}
+
+Labirinto::Posicao Labirinto::centroNaoVisitadoMaisProximo() {
+    Posicao cs[4];
+    uint8_t nc = 0;
+    celulasCentro(cs, nc);
+
+    floodFill(pos_);   // distancias a partir da posicao atual (paredes conhecidas)
+
+    Posicao melhor = kInvalida;
+    uint16_t melhorD = kDistanciaInfinita;
+    for (uint8_t i = 0; i < nc; ++i) {
+        if (visitada(cs[i])) continue;
+        const uint16_t d = dist_[cs[i].y][cs[i].x];
+        if (d < melhorD) {
+            melhorD = d;
+            melhor = cs[i];
+        }
+    }
+    return melhor;
+}
+
 void Labirinto::mover(Direcao d) {
     if (robo_.virarPara) robo_.virarPara(d);
     if (robo_.avancar)   robo_.avancar();
@@ -264,13 +362,21 @@ Labirinto::Resultado Labirinto::passo(const LeituraSensores &s) {
 
     switch (fase_) {
         case Fase::ExplorarAteObjetivo: {
-            floodFill(objetivo_);
-            if (pos_ == objetivo_) {
-                fase_ = Fase::RefinarCaminho;
+            // O objetivo e o bloco central 2x2 INTEIRO: percorre todas as
+            // celulas do centro alcancaveis (confirmando que estao abertas e que
+            // o robo realmente chegou) antes de declarar AlcancouObjetivo.
+            const Posicao alvo = centroNaoVisitadoMaisProximo();
+            if (alvo == kInvalida) {
+                // Nenhuma celula do centro nao-visitada e alcancavel.
+                if (!algumCentroVisitado()) {
+                    return Resultado::Bloqueado;   // centro inteiro inalcancavel
+                }
+                fase_ = Fase::RefinarCaminho;      // todas as alcancaveis visitadas
                 alvoExploracao_ = kInvalida;
                 return Resultado::AlcancouObjetivo;
             }
-            const Direcao d = proximaDirecaoFlood();
+            floodFill(alvo);
+            const Direcao d = direcaoDeMenorDist(pos_);
             if (d == Direcao::Nenhuma) return Resultado::Bloqueado;
             mover(d);
             return Resultado::EmProgresso;
@@ -305,7 +411,7 @@ Labirinto::Resultado Labirinto::passo(const LeituraSensores &s) {
         case Fase::RetornarAoInicio: {
             floodFill(inicio_);
             if (pos_ == inicio_) {
-                floodFill(objetivo_);
+                floodFillCentro();
                 fase_ = Fase::FastRun;
                 return Resultado::RetornouAoInicio;
             }
@@ -316,10 +422,13 @@ Labirinto::Resultado Labirinto::passo(const LeituraSensores &s) {
         }
 
         case Fase::FastRun: {
-            if (pos_ == objetivo_) {
+            // Corre para o tile do centro mais proximo e PARA no primeiro deles
+            // que alcancar (nao precisa varrer o 2x2 na corrida rapida).
+            if (ehCelulaCentro(pos_)) {
                 fase_ = Fase::Concluido;
                 return Resultado::FastRunCompleto;
             }
+            floodFillCentro();
             const Direcao d = direcaoDeMenorDist(pos_);
             if (d == Direcao::Nenhuma) return Resultado::Bloqueado;
             mover(d);

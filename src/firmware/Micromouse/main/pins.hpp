@@ -25,8 +25,8 @@
 #define MOTOR_RIGHT_ENC_A_PIN GPIO_NUM_36 // C2-01 (VP)
 #define MOTOR_RIGHT_ENC_B_PIN GPIO_NUM_39 // C2-02 (VN)
 
-// Botoes de controle (entrada com pull-up interno; o botao curto-circuita
-// para o GND, portanto sao ativos em nivel baixo).
+// Botoes de controle (entrada com pull-down interno; o botao liga o pino ao
+// 3V3, portanto sao ativos em nivel ALTO — ver botoes/botoes.cpp).
 #define BUTTON_START_PIN  GPIO_NUM_19 // D19: 1o clique mapeia, 2o clique corre
 #define BUTTON_SIZE_PIN   GPIO_NUM_23 // D23: cicla o tamanho 4x4 -> 8x8
 

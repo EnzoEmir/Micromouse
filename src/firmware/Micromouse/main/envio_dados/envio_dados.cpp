@@ -31,7 +31,9 @@ static esp_err_t enviar_json(const char* url, cJSON* raiz) {
     esp_http_client_config_t config = {};
     config.url = url;
     config.method = HTTP_METHOD_POST;
-    config.timeout_ms = 5000;
+    // Timeout curto: se o servidor cair no meio da corrida, cada envio segura
+    // a navegacao por no maximo 1 s (era 5 s).
+    config.timeout_ms = 1000;
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == nullptr) {

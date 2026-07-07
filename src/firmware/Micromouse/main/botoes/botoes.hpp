@@ -3,19 +3,19 @@
 #include <cstdint>
 #include "driver/gpio.h"
 
-// Botao momentaneo ativo em nivel baixo (liga o pino ao GND quando pressionado).
-// Usa o pull-up interno do ESP32 e faz debounce por software. Projetado para ser
-// consultado em laco (polling); chame clicado() periodicamente.
+// Botao momentaneo ativo em nivel ALTO (liga o pino ao 3V3 quando pressionado).
+// Usa o pull-down interno do ESP32 e faz debounce por software. Projetado para
+// ser consultado em laco (polling); chame clicado() periodicamente.
 class Botao {
 public:
     // tempo_debounce_ms: janela de estabilidade exigida para aceitar a mudanca.
     explicit Botao(gpio_num_t pino, uint32_t tempo_debounce_ms = 25);
 
-    // Configura o GPIO como entrada com pull-up. Captura o nivel inicial para
+    // Configura o GPIO como entrada com pull-down. Captura o nivel inicial para
     // nao gerar um "clique" falso no boot.
     void init();
 
-    // Retorna true UMA unica vez por pressionamento (borda de descida ja
+    // Retorna true UMA unica vez por pressionamento (borda de subida ja
     // debounced: solto -> pressionado). Deve ser chamado repetidamente.
     bool clicado();
 
