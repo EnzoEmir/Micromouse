@@ -77,6 +77,36 @@ bool Battery::init() {
     config.shunt_resistance_ohms = 0.0333333f; // Físico: 3 resistores de 0.1 ohm em paralelo
     ina_sensor = new espp::Ina226(config);
 
+    // Diagnostico do INA226. Corrente e potencia so sao calculadas pelo chip se o
+    // registrador CALIBRATION estiver programado; a tensao (bus) e independente
+    // disso. Se o auto-init do driver abortou no check de ID (comum em modulos
+    // clones), a calibracao nunca foi escrita e corrente/potencia ficam em 0
+    // enquanto a tensao continua valida. Logamos IDs + shunt bruto e forcamos a
+    // calibracao para descartar esse caso.
+    {
+        std::error_code ec;
+        const uint16_t man_id  = ina_sensor->manufacturer_id(ec);
+        const uint16_t die_id  = ina_sensor->die_id(ec);
+        const float    v_shunt = ina_sensor->shunt_voltage_volts(ec);
+        ESP_LOGI("Battery",
+                 "INA226 diag: manId=0x%04X (esperado 0x5449) | dieId=0x%04X "
+                 "(esperado 0x2260) | Vshunt=%.6f V",
+                 man_id, die_id, v_shunt);
+        if (man_id != 0x5449 || die_id != 0x2260) {
+            ESP_LOGW("Battery",
+                     "IDs do INA226 nao batem: possivel modulo clone. Forcando "
+                     "calibracao para habilitar leitura de corrente/potencia.");
+        }
+        // Forca a calibracao independente do check de ID do driver. Se Vshunt for
+        // ~0 aqui mesmo com carga, a corrente=0 e problema de hardware (shunt/
+        // conexoes IN+/IN-), nao de calibracao.
+        ina_sensor->calibrate(config.current_lsb, config.shunt_resistance_ohms, ec);
+        if (ec) {
+            ESP_LOGW("Battery", "Falha ao escrever calibracao do INA226: %s",
+                     ec.message().c_str());
+        }
+    }
+
     const float v0 = getVoltage();
     const float i0 = getCurrent();
     const float p0 = getPower();

@@ -344,6 +344,40 @@ Labirinto::Posicao Labirinto::centroNaoVisitadoMaisProximo() {
     return melhor;
 }
 
+uint8_t Labirinto::retaFastRun(Direcao &dir_saida, bool &termina_em_parede) {
+    dir_saida = Direcao::Nenhuma;
+    termina_em_parede = false;
+    if (fase_ != Fase::FastRun) return 0;
+
+    floodFillCentro();
+    const Direcao d0 = direcaoDeMenorDist(pos_);
+    if (d0 == Direcao::Nenhuma) return 0;   // ja no centro (sem descida de gradiente)
+    dir_saida = d0;
+
+    // Anda o gradiente enquanto a direcao otima continuar sendo d0 (trecho reto).
+    Posicao p = pos_;
+    uint8_t count = 0;
+    while (true) {
+        if (direcaoDeMenorDist(p) != d0) break; // a rota curva aqui (ou chegou ao centro)
+        p = vizinho(p, d0);
+        ++count;
+        if (ehCelulaCentro(p)) break;           // trecho reto entra direto no centro
+    }
+    // Trecho "termina em parede" = ha parede a frente na celula final -> a curva
+    // seguinte e forcada pela parede, entao o ToF frontal e um batente confiavel.
+    termina_em_parede = temParede(p, d0);
+    return count;
+}
+
+void Labirinto::avancarModeloFastRun(Direcao d, uint8_t n) {
+    heading_ = d;
+    for (uint8_t i = 0; i < n; ++i) {
+        const Posicao v = vizinho(pos_, d);
+        if (!dentroDosLimites(v)) break;
+        pos_ = v;
+    }
+}
+
 void Labirinto::mover(Direcao d) {
     if (robo_.virarPara) robo_.virarPara(d);
     if (robo_.avancar)   robo_.avancar();

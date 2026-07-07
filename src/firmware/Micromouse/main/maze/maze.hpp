@@ -134,6 +134,18 @@ public:
 
     Direcao direcaoDeMenorDist(Posicao p) const;
 
+    // Corrida rapida: comprimento do trecho RETO a partir de pos_ seguindo o
+    // gradiente ate o centro. Preenche `dir_saida` (direcao do trecho) e
+    // `termina_em_parede` (o trecho acaba de frente para uma parede -> curva
+    // forcada; batente confiavel para o ToF frontal). Retorna o numero de tiles
+    // retos (0 se ja no centro / sem descida). Recalcula o flood para o centro.
+    uint8_t retaFastRun(Direcao &dir_saida, bool &termina_em_parede);
+
+    // Corrida rapida: avanca o MODELO (pos_/heading_) n celulas na direcao d,
+    // sem acionar o robo. Usado quando o firmware ja dirigiu o trecho reto
+    // inteiro de uma vez (dash sem parar ate a parede).
+    void avancarModeloFastRun(Direcao d, uint8_t n);
+
 private:
     static constexpr uint8_t kBitVisitada = 1 << 4;
 

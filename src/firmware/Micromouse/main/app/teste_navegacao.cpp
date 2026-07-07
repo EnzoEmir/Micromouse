@@ -77,8 +77,8 @@ constexpr int   PWM_MAX     = 1023;                  // resolucao 10 bits
 // --- Avanco ---
 // PWM_DRIVE = VELOCIDADE de avanco (fracao do PWM_MAX). Aumentar = mais rapido.
 // PWM_FAST  = velocidade da corrida rapida (usada so na fase FastRun do maze).
-constexpr int   PWM_DRIVE   = (int)(PWM_MAX * 0.18f);// 18% do PWM (exploracao)
-constexpr int   PWM_FAST    = PWM_DRIVE;             // corrida rapida = mapeamento
+constexpr int   PWM_DRIVE   = (int)(PWM_MAX * 0.22f);// 22% do PWM (exploracao)
+constexpr int   PWM_FAST    = (int)(PWM_MAX * 0.30f);// 30% do PWM (corrida rapida)
 // Compensacao da ASSIMETRIA dos motores (bancada: motor ESQUERDO bem mais forte
 // que o DIREITO). Feed-forward aplicado ao PWM base: FREIA o lado forte
 // (TRIM_L<1) e REFORCA o lado fraco (TRIM_R>1), deixando as duas rodas com
@@ -571,9 +571,17 @@ int pwmAvanco() {
     return (g_maze.fase() == Labirinto::Fase::FastRun) ? PWM_FAST : PWM_DRIVE;
 }
 
-// Anda EXATAMENTE 1 tile contando PULSOS de encoder. Mantem linha reta pela
-// diferenca L/R dos encoders e adiciona centralizacao ToF suave (hibrido).
-Avanco andarUmTile() {
+// Anda n_tiles tiles contando PULSOS de encoder, SEM parar entre eles. Mantem
+// linha reta pela diferenca L/R dos encoders e adiciona centralizacao ToF suave
+// (hibrido). Para 1 tile (padrao) e o avanco normal do mapeamento.
+//   ate_parede: usado no dash da corrida rapida. Amplia o teto de pulsos em 1
+//   tile e deixa o ToF FRONTAL ser o batente (para na parede que fecha a reta),
+//   corrigindo a deriva do encoder acumulada no trecho longo.
+Avanco andarUmTile(int n_tiles = 1, bool ate_parede = false) {
+    if (n_tiles < 1) n_tiles = 1;
+    // Teto de pulsos: no modo ate_parede fica 1 tile alem, pois a parada real e
+    // a parede frontal (~meio tile alem do centro da ultima celula).
+    const long alvo = (long)COUNTS_PER_TILE * (ate_parede ? n_tiles + 1 : n_tiles);
     const int pwm_base   = pwmAvanco();
     const int pwm_base_l = std::min(PWM_MAX, (int)(pwm_base * TRIM_L));
     const int pwm_base_r = std::min(PWM_MAX, (int)(pwm_base * TRIM_R));
@@ -584,7 +592,8 @@ Avanco andarUmTile() {
     int   confirmados = 0;
     float corr_filt   = 0.0f;
     bool  aviso_enc   = false; // avisa 1x se detectar encoder morto
-    ESP_LOGI(TAG, ">> Tile: alvo=%ld pulsos", COUNTS_PER_TILE);
+    ESP_LOGI(TAG, ">> Tile: alvo=%ld pulsos (%d tile%s%s)", alvo, n_tiles,
+             n_tiles > 1 ? "s" : "", ate_parede ? ", ate a parede" : "");
 
     while (true) {
         const long cl = std::labs(enc_left());
@@ -619,8 +628,8 @@ Avanco andarUmTile() {
             confirmados = 0;
         }
 
-        // (b) Completou o tile pela contagem de pulsos.
-        if (media >= COUNTS_PER_TILE) {
+        // (b) Completou o(s) tile(s) pela contagem de pulsos.
+        if (media >= alvo) {
             motores_para();
             ESP_LOGI(TAG, "<< Tile OK: encL=%ld encR=%ld media=%ld (dif L/R=%ld)",
                      cl, cr, media, cr - cl);
@@ -659,12 +668,12 @@ Avanco andarUmTile() {
             ESP_LOGI(TAG,
                      "  tile: encL=%ld encR=%ld media=%ld/%ld | df=%.0f de=%.0f dd=%.0f"
                      " | eReta=%+.0f eToF=%+.0f corr=%+d | PWM L=%d R=%d",
-                     cl, cr, media, COUNTS_PER_TILE, df, de, dd,
+                     cl, cr, media, alvo, df, de, dd,
                      err_reta, err_tof, (int)corr_filt, dl, dr);
         }
 
-        // (d) Trava de seguranca por celula.
-        if (esp_timer_get_time() - t0 > TILE_TIMEOUT_US) {
+        // (d) Trava de seguranca por celula (escala com o numero de tiles).
+        if (esp_timer_get_time() - t0 > TILE_TIMEOUT_US * (ate_parede ? n_tiles + 1 : n_tiles)) {
             motores_para();
             ESP_LOGW(TAG, "Tile: timeout (media=%ld pulsos).", media);
             return Avanco::TILE_OK;
@@ -1014,6 +1023,28 @@ extern "C" void app_main(void) {
         ESP_LOGI(TAG, "=== FAST RUN (PWM %d) ===", PWM_FAST);
         while (true) {
             if (abortarPorTemperatura()) break;
+
+            // Otimizacao da reta: se o caminho otimo segue RETO por mais de 1
+            // tile e o trecho termina numa PAREDE (curva forcada), dirige o
+            // trecho inteiro SEM PARAR entre os tiles, usando o ToF frontal como
+            // batente. So depois atualiza o modelo do maze e volta ao ciclo
+            // normal (que faz a curva). Evita a parada/sensoriamento tile a tile.
+            {
+                Labirinto::Direcao dir_saida = Labirinto::Direcao::Nenhuma;
+                bool termina_parede = false;
+                const uint8_t n = g_maze.retaFastRun(dir_saida, termina_parede);
+                if (n >= 2 && termina_parede) {
+                    ESP_LOGI(TAG, "fastrun: reta de %u tiles ate a parede -> dash sem parar",
+                             (unsigned)n);
+                    virarPara(dir_saida);                 // alinha uma unica vez
+                    const Avanco ra = andarUmTile((int)n, /*ate_parede=*/true);
+                    if (ra == Avanco::PAREDE) recentralizarFrontal();
+                    g_maze.avancarModeloFastRun(dir_saida, n); // pos_/heading_ += n
+                    g_fastrun_tiles += n;
+                    vTaskDelay(pdMS_TO_TICKS(120));
+                    continue;                             // reavalia do novo tile
+                }
+            }
 
             const Labirinto::LeituraSensores s = lerParedes();
             const Labirinto::Resultado r = g_maze.passo(s);
