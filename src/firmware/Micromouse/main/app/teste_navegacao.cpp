@@ -93,6 +93,12 @@ constexpr float TRIM_R      = 1.20f;                 // reforca o motor direito 
 constexpr float BIAS_FRENTE   = 69.0f;   // lida - real (caracterizado)
 constexpr float FRONT_STOP_MM = 50.0f;   // para se a parede estiver a <= 5 cm
 constexpr int   CONFIRMACOES  = 2;        // leituras seguidas p/ confirmar parede
+// Dash da corrida rapida: a reta TERMINA numa parede, entao paramos pela PAREDE
+// FRONTAL (referencia absoluta que corrige a deriva do encoder no trecho longo),
+// e nao pela contagem de pulsos. Para a FRONT_DASH_STOP_MM da parede (com folga
+// p/ nao bater) e comeca a desacelerar a (stop + DECEL_FRENTE_MM). CALIBRAR.
+constexpr float FRONT_DASH_STOP_MM = 75.0f;
+constexpr float DECEL_FRENTE_MM    = 80.0f;
 
 // --- Recentralizacao frontal (pulsos) ---
 constexpr float TARGET_MM   = 25.0f;     // distancia frontal final desejada
@@ -117,6 +123,10 @@ constexpr float BIAS_DIR = 52.0f;        // lida - real (direita)
 constexpr int   N_AMOSTRAS = 7;
 constexpr float WALL_THRESHOLD_MM = 100.0f; // < isto = ha parede do lado
 constexpr float PAREDE_ALVO_MM    = 50.0f;  // distancia desejada de cada parede
+// Quantos ciclos de leitura lateral INVALIDA segurar o ultimo valor valido
+// durante o avanco (cobre dropouts do ToF ao colar na parede). Alem disso,
+// considera o lado sem parede (evita arrastar leitura obsoleta entre celulas).
+constexpr int   HOLD_MAX_MISS     = 6;
 
 // --- Distancia de 1 CELULA (medida pelos encoders, PCNT quadratura x4) ---
 // COUNTS_PER_TILE = pulsos de encoder por celula. Aumentar = anda MAIS por
@@ -125,6 +135,11 @@ constexpr float PAREDE_ALVO_MM    = 50.0f;  // distancia desejada de cada parede
 constexpr long    COUNTS_PER_TILE = 1065;
 constexpr float   FRENTE_LIVRE_MM = 120.0f;   // df acima disso = frente ABERTA (sem parede)
 constexpr int64_t TILE_TIMEOUT_US = 5000000;  // trava de seguranca por tile (5 s)
+// Desaceleracao no fim do avanco: no ultimo trecho antes do alvo, se estiver em
+// alta velocidade (corrida rapida), cai para PWM_DRIVE para nao PASSAR do tile
+// nem bater na parede por inercia. So afeta quando pwm_base > PWM_DRIVE.
+// (~57 pulsos/cm; 350 ~= 6 cm.) CALIBRAR: aumentar se ainda passar do tile.
+constexpr long    DECEL_COUNTS    = 350;
 
 // --- CENTRALIZACAO / linha reta durante o avanco ---
 // Correcao aplicada aos motores = KP_RETA*(cr-cl) + KP_CENTRO*erro_lateral_ToF.
@@ -160,6 +175,15 @@ constexpr float   APPROACH_GRAUS      = 35.0f;  // faltando isto p/ o alvo, entr
 constexpr float   MARGEM_PARADA_GRAUS = 25.0f;  // corta o motor a (ALVO - isto); inercia fecha o resto
 constexpr int     SETTLE_MS           = 400;
 constexpr int64_t GIRO_TIMEOUT_US     = 8000000; // trava de seguranca por giro
+// Correcao fina do giro (malha fechada): o corte + inercia costuma parar ANTES
+// de 90 graus e de forma inconsistente (varia com bateria/atrito). Apos assentar,
+// completa o giro com pulsos curtos ate entrar na tolerancia.
+//   - se ainda fecha CURTO: aumente MAX_TRIMS_GIRO ou TRIM_GIRO_PULSO_MS.
+//   - se passar de 90 (overshoot no trim): reduza TRIM_GIRO_PULSO_MS.
+constexpr float   TOL_GIRO_GRAUS      = 3.0f;   // aceita 90 +/- isto
+constexpr int     TRIM_GIRO_PULSO_MS  = 60;     // duracao de cada pulso de correcao
+constexpr int     TRIM_GIRO_SETTLE_MS = 120;    // assentamento/medida entre pulsos
+constexpr int     MAX_TRIMS_GIRO      = 12;     // teto de pulsos (trava de seguranca)
 
 // --- Labirinto (flood-fill) ---
 // O tamanho e escolhido em campo pelo botao 2 (D23), que cicla as opcoes
@@ -522,6 +546,21 @@ void girar(bool sentido_direita) {
     bool timeout = false;
     bool lento   = false;  // ja passou para a fase lenta de aproximacao
 
+    // Integra a velocidade angular do gyro por `ms` (mantendo t_prev continuo).
+    // Reusada na medida de assentamento e na correcao fina em malha fechada.
+    auto integrar_por = [&](int ms) {
+        const int64_t tstart = esp_timer_get_time();
+        while (esp_timer_get_time() - tstart < (int64_t)ms * 1000) {
+            const int64_t now = esp_timer_get_time();
+            float dt = (now - t_prev) / 1e6f;
+            if (dt <= 0.0f) dt = 1e-3f;
+            t_prev = now;
+            float gz;
+            if (ler_gz_dps(&gz)) angulo += gz * dt;
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+    };
+
     // Fase 1: gira ate o alvo (com margem) ou timeout, desacelerando na chegada.
     while (fabsf(angulo) < ALVO_GRAUS - MARGEM_PARADA_GRAUS) {
         if (esp_timer_get_time() - t0 > GIRO_TIMEOUT_US) { timeout = true; break; }
@@ -542,19 +581,25 @@ void girar(bool sentido_direita) {
     motores_para();
 
     // Fase 2: mede o angulo final durante a parada (inclui inercia).
-    const int64_t ts = esp_timer_get_time();
-    while (esp_timer_get_time() - ts < (int64_t)SETTLE_MS * 1000) {
-        const int64_t now = esp_timer_get_time();
-        float dt = (now - t_prev) / 1e6f;
-        if (dt <= 0.0f) dt = 1e-3f;
-        t_prev = now;
-        float gz;
-        if (ler_gz_dps(&gz)) angulo += gz * dt;
-        vTaskDelay(pdMS_TO_TICKS(5));
+    integrar_por(SETTLE_MS);
+
+    // Fase 3: correcao fina em malha fechada. Enquanto o giro estiver CURTO
+    // (fora da tolerancia), aplica pulsos curtos no mesmo sentido ate fechar os
+    // 90 graus. Elimina o giro-de-menos e a inconsistencia do corte+inercia.
+    int trims = 0;
+    while (!timeout && fabsf(angulo) < ALVO_GRAUS - TOL_GIRO_GRAUS && trims < MAX_TRIMS_GIRO) {
+        ++trims;
+        if (sentido_direita) dir_girar_direita(); else dir_girar_esquerda();
+        pwm_left(PWM_GIRO_SLOW); pwm_right(PWM_GIRO_SLOW);
+        integrar_por(TRIM_GIRO_PULSO_MS);
+        motores_para();
+        integrar_por(TRIM_GIRO_SETTLE_MS); // deixa assentar e mede antes do proximo pulso
+        ESP_LOGI(TAG, "   trim giro %d: angulo=%.1f graus", trims, fabsf(angulo));
     }
 
     if (timeout) ESP_LOGW(TAG, "<< TIMEOUT giro %s. Angulo=%.1f", nome, fabsf(angulo));
-    else         ESP_LOGI(TAG, "<< Giro %s ok. Angulo final=%.1f graus", nome, fabsf(angulo));
+    else ESP_LOGI(TAG, "<< Giro %s ok. Angulo final=%.1f graus (%d trim)",
+                  nome, fabsf(angulo), trims);
 }
 
 // =====================  PRIMITIVAS DE MOVIMENTO  =====================
@@ -573,18 +618,21 @@ int pwmAvanco() {
 
 // Anda n_tiles tiles contando PULSOS de encoder, SEM parar entre eles. Mantem
 // linha reta pela diferenca L/R dos encoders e adiciona centralizacao ToF suave
-// (hibrido). Para 1 tile (padrao) e o avanco normal do mapeamento.
-//   ate_parede: usado no dash da corrida rapida. Amplia o teto de pulsos em 1
-//   tile e deixa o ToF FRONTAL ser o batente (para na parede que fecha a reta),
-//   corrigindo a deriva do encoder acumulada no trecho longo.
-Avanco andarUmTile(int n_tiles = 1, bool ate_parede = false) {
+// (hibrido). Desacelera no fim para nao passar do tile em alta velocidade.
+//   parar_frente_mm >= 0: modo DASH (reta que termina em parede). A parada
+//   PRIMARIA passa a ser a PAREDE FRONTAL a essa distancia (referencia absoluta
+//   que corrige a deriva do encoder no trecho longo); a contagem de pulsos vira
+//   apenas o teto de seguranca. Padrao (-1) para 1 tile pela contagem, com o ToF
+//   frontal so como parada de seguranca (FRONT_STOP_MM).
+Avanco andarUmTile(int n_tiles = 1, float parar_frente_mm = -1.0f) {
     if (n_tiles < 1) n_tiles = 1;
-    // Teto de pulsos: no modo ate_parede fica 1 tile alem, pois a parada real e
-    // a parede frontal (~meio tile alem do centro da ultima celula).
-    const long alvo = (long)COUNTS_PER_TILE * (ate_parede ? n_tiles + 1 : n_tiles);
+    const bool para_frente = (parar_frente_mm >= 0.0f);
+    // Teto de pulsos. No modo dash, meio tile alem (a parada real e a parede);
+    // se por algum motivo a parede nao for vista, o encoder segura o avanco.
+    const long alvo = (long)COUNTS_PER_TILE * n_tiles +
+                      (para_frente ? COUNTS_PER_TILE / 2 : 0);
+    const float stop_frente = para_frente ? parar_frente_mm : FRONT_STOP_MM;
     const int pwm_base   = pwmAvanco();
-    const int pwm_base_l = std::min(PWM_MAX, (int)(pwm_base * TRIM_L));
-    const int pwm_base_r = std::min(PWM_MAX, (int)(pwm_base * TRIM_R));
     enc_zerar();
     dir_frente();
     const int64_t t0 = esp_timer_get_time();
@@ -592,8 +640,17 @@ Avanco andarUmTile(int n_tiles = 1, bool ate_parede = false) {
     int   confirmados = 0;
     float corr_filt   = 0.0f;
     bool  aviso_enc   = false; // avisa 1x se detectar encoder morto
-    ESP_LOGI(TAG, ">> Tile: alvo=%ld pulsos (%d tile%s%s)", alvo, n_tiles,
-             n_tiles > 1 ? "s" : "", ate_parede ? ", ate a parede" : "");
+    // Ultima leitura lateral VALIDA neste tile. O VL53L0X perde a medida de
+    // forma intermitente quando o robo esta MUITO perto da parede (abaixo da
+    // faixa util do sensor); sem isso a parede "some" e a centralizacao para de
+    // corrigir. Segura o ultimo valor valido ate chegar outra leitura (perto ou
+    // longe), entao qualquer leitura valida atualiza e ele se auto-corrige.
+    float de_hold = -1.0f;
+    float dd_hold = -1.0f;
+    int   de_miss = 0;   // ciclos invalidos seguidos na leitura esquerda
+    int   dd_miss = 0;   // ciclos invalidos seguidos na leitura direita
+    ESP_LOGI(TAG, ">> Tile: alvo=%ld pulsos (%d tile%s)", alvo, n_tiles,
+             n_tiles > 1 ? "s" : "");
 
     while (true) {
         const long cl = std::labs(enc_left());
@@ -615,13 +672,15 @@ Avanco andarUmTile(int n_tiles = 1, bool ate_parede = false) {
                      cl, cr, (cl < cr) ? "ESQUERDO" : "DIREITO");
         }
 
-        // (a) Parede imediata: parada de seguranca.
+        // (a) Parada pela parede frontal. No modo dash e a parada PRIMARIA
+        // (stop_frente = FRONT_DASH_STOP_MM, referencia absoluta); caso contrario
+        // e so a parada de seguranca (stop_frente = FRONT_STOP_MM).
         const float df = lerReal(g_tof_front, BIAS_FRENTE);
-        if (df >= 0.0f && df <= FRONT_STOP_MM) {
+        if (df >= 0.0f && df <= stop_frente) {
             if (++confirmados >= CONFIRMACOES) {
                 motores_para();
-                ESP_LOGW(TAG, "<< Tile PAREDE: df=%.0f mm | encL=%ld encR=%ld media=%ld",
-                         df, cl, cr, media);
+                ESP_LOGW(TAG, "<< Tile PAREDE: df=%.0f mm (<=%.0f) | encL=%ld encR=%ld media=%ld",
+                         df, stop_frente, cl, cr, media);
                 return Avanco::PAREDE;
             }
         } else {
@@ -640,8 +699,16 @@ Avanco andarUmTile(int n_tiles = 1, bool ate_parede = false) {
         // Com encoder morto, err_reta=0 (usa so ToF; senao a correcao trava no talo).
         float err_reta = enc_reto_ok ? (float)(cr - cl) : 0.0f; // >0: direita adiantada
 
-        const float de = lerReal(g_tof_esq, BIAS_ESQ);
-        const float dd = lerReal(g_tof_dir, BIAS_DIR);
+        const float de_raw = lerReal(g_tof_esq, BIAS_ESQ);
+        const float dd_raw = lerReal(g_tof_dir, BIAS_DIR);
+        // Memoriza a ultima leitura valida; se ficar invalida por muitos ciclos
+        // seguidos, descarta (o lado passou a ser considerado sem parede).
+        if (de_raw >= 0.0f)            { de_hold = de_raw; de_miss = 0; }
+        else if (++de_miss > HOLD_MAX_MISS) de_hold = -1.0f;
+        if (dd_raw >= 0.0f)            { dd_hold = dd_raw; dd_miss = 0; }
+        else if (++dd_miss > HOLD_MAX_MISS) dd_hold = -1.0f;
+        const float de = de_hold;             // usa a memoria (aguenta dropouts)
+        const float dd = dd_hold;
         const bool  we = (de >= 0.0f && de < WALL_THRESHOLD_MM);
         const bool  wd = (dd >= 0.0f && dd < WALL_THRESHOLD_MM);
         float err_tof = 0.0f;
@@ -655,8 +722,21 @@ Avanco andarUmTile(int n_tiles = 1, bool ate_parede = false) {
         if (corr < -CORR_MAX) corr = -CORR_MAX;
         corr_filt += FILTRO_CORR * (corr - corr_filt);
 
-        int dl = pwm_base_l + (int)corr_filt; // corr>0 => acelera esquerda
-        int dr = pwm_base_r - (int)corr_filt;
+        // Desacelera no fim do trecho: em alta velocidade (fast run) cai para
+        // PWM_DRIVE, para o coast final ser o mesmo da exploracao (onde
+        // COUNTS_PER_TILE foi calibrado) -> nao passa do tile nem bate na parede.
+        // Gatilho por CONTAGEM (no modo normal) ou pela DISTANCIA FRONTAL (dash,
+        // onde a parada e a parede). Sem efeito na exploracao (pwm_base=PWM_DRIVE).
+        const bool perto_fim    = (alvo - media) < DECEL_COUNTS;
+        const bool perto_frente = para_frente && df >= 0.0f &&
+                                  df < stop_frente + DECEL_FRENTE_MM;
+        int pwm_eff = pwm_base;
+        if (pwm_base > PWM_DRIVE && (perto_fim || perto_frente)) pwm_eff = PWM_DRIVE;
+        const int pwm_l = std::min(PWM_MAX, (int)(pwm_eff * TRIM_L));
+        const int pwm_r = std::min(PWM_MAX, (int)(pwm_eff * TRIM_R));
+
+        int dl = pwm_l + (int)corr_filt; // corr>0 => acelera esquerda
+        int dr = pwm_r - (int)corr_filt;
         dl = std::max(0, std::min(dl, PWM_MAX));
         dr = std::max(0, std::min(dr, PWM_MAX));
         pwm_left(dl); pwm_right(dr);
@@ -673,7 +753,7 @@ Avanco andarUmTile(int n_tiles = 1, bool ate_parede = false) {
         }
 
         // (d) Trava de seguranca por celula (escala com o numero de tiles).
-        if (esp_timer_get_time() - t0 > TILE_TIMEOUT_US * (ate_parede ? n_tiles + 1 : n_tiles)) {
+        if (esp_timer_get_time() - t0 > TILE_TIMEOUT_US * n_tiles) {
             motores_para();
             ESP_LOGW(TAG, "Tile: timeout (media=%ld pulsos).", media);
             return Avanco::TILE_OK;
@@ -1026,18 +1106,19 @@ extern "C" void app_main(void) {
 
             // Otimizacao da reta: se o caminho otimo segue RETO por mais de 1
             // tile e o trecho termina numa PAREDE (curva forcada), dirige o
-            // trecho inteiro SEM PARAR entre os tiles, usando o ToF frontal como
-            // batente. So depois atualiza o modelo do maze e volta ao ciclo
-            // normal (que faz a curva). Evita a parada/sensoriamento tile a tile.
+            // trecho inteiro SEM PARAR entre os tiles e para pela PAREDE FRONTAL
+            // (referencia absoluta que corrige a deriva do encoder no trecho
+            // longo), com desaceleracao na aproximacao. Depois recentraliza e
+            // atualiza o modelo do maze, voltando ao ciclo normal que faz a curva.
             {
                 Labirinto::Direcao dir_saida = Labirinto::Direcao::Nenhuma;
                 bool termina_parede = false;
                 const uint8_t n = g_maze.retaFastRun(dir_saida, termina_parede);
                 if (n >= 2 && termina_parede) {
-                    ESP_LOGI(TAG, "fastrun: reta de %u tiles ate a parede -> dash sem parar",
+                    ESP_LOGI(TAG, "fastrun: reta de %u tiles -> dash ate a parede frontal",
                              (unsigned)n);
                     virarPara(dir_saida);                 // alinha uma unica vez
-                    const Avanco ra = andarUmTile((int)n, /*ate_parede=*/true);
+                    const Avanco ra = andarUmTile((int)n, FRONT_DASH_STOP_MM);
                     if (ra == Avanco::PAREDE) recentralizarFrontal();
                     g_maze.avancarModeloFastRun(dir_saida, n); // pos_/heading_ += n
                     g_fastrun_tiles += n;
