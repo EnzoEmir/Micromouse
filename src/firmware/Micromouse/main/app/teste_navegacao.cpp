@@ -516,6 +516,18 @@ int atualizar_bateria() {
     if (soc < 0.0f)   soc = 0.0f;
     if (soc > 100.0f) soc = 100.0f;
     g_bateria_pct = (int)(soc + 0.5f);
+
+    static int64_t t_log_ina = 0;
+    const int64_t now = esp_timer_get_time();
+    if (now - t_log_ina >= 2000000) {
+        t_log_ina = now;
+        const float v = g_battery.getVoltage();
+        ESP_LOGI(TAG, "INA226: V=%.2f V | I=%.3f A | P=%.2f W | SOC=%d%%",
+                 v, g_battery.getCurrent(), g_battery.getPower(), g_bateria_pct);
+        if (v < 1.0f) {
+            ESP_LOGW(TAG, "INA226: tensao ~0 V; verifique o barramento/conexoes.");
+        }
+    }
     return g_bateria_pct;
 }
 
@@ -956,6 +968,19 @@ extern "C" void app_main(void) {
     if (!g_battery.init()) {
         ESP_LOGE(TAG, "Falha ao inicializar bateria/I2C.");
         return;
+    }
+
+    {
+        const bool ina_ok = i2c_manager_probe(I2C_ADDR_INA226_BOARD);
+        ESP_LOGI(TAG, "INA226 PROBE 0x%02X: %s | V=%.2f V | I=%.3f A | P=%.2f W | SOC=%.0f%%",
+                 I2C_ADDR_INA226_BOARD, ina_ok ? "OK" : "FALHA",
+                 g_battery.getVoltage(), g_battery.getCurrent(),
+                 g_battery.getPower(), g_battery.getSOC());
+        if (!ina_ok) {
+            ESP_LOGW(TAG, "INA226 nao respondeu no 0x%02X: confira solda, SDA/SCL, "
+                          "alimentacao e o strap de endereco (A0/A1).",
+                     I2C_ADDR_INA226_BOARD);
+        }
     }
 
     // 2) Desliga os 5 ToFs e inicializa os 3 usados (frontal, esq, dir).

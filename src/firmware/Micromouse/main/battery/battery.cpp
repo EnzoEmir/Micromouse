@@ -1,6 +1,8 @@
 #include "battery/battery.hpp"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <system_error>
 #include <cmath>
 #include <cstring>
@@ -107,7 +109,11 @@ bool Battery::init() {
         }
     }
 
-    const float v0 = getVoltage();
+    float v0 = getVoltage();
+    for (int tent = 0; v0 < 1.0f && tent < 20; ++tent) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        v0 = getVoltage();
+    }
     const float i0 = getCurrent();
     const float p0 = getPower();
     const float seeds[FILTER_COUNT] = {i0, v0, p0};
