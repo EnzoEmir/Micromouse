@@ -5,10 +5,11 @@
  *         virarPara(Direcao ABSOLUTA) -> alinha o robo para N/L/S/O (gira 90/180)
  *         avancar()                   -> anda EXATAMENTE 1 celula (tile)
  *   - Modo HIBRIDO dos sensores nessas primitivas:
- *         ENCODERS (PCNT) : distancia do tile (COUNTS_PER_TILE) e linha reta.
- *         ToFs laterais   : centralizacao entre as paredes.
+ *         ENCODERS (PCNT) : distancia do tile (COUNTS_PER_TILE). NAO faz o reto.
+ *         ToFs laterais   : POSICAO no corredor (centraliza entre as paredes).
+ *         Giroscopio (MPU): RUMO durante o avanco (amortece/mantem reto, fusao
+ *                           com os ToFs) e fecha o giro de 90/180 graus.
  *         ToF frontal     : parada de seguranca + recuo/recentralizacao.
- *         Giroscopio (MPU): fecha o giro de 90/180 graus.
  *
  * FLUXO DA COMPETICAO (UM botao, D19; ver pins.hpp). O botao de tamanho (D23)
  * esta com defeito de hardware, entao o D19 acumula as funcoes pelo tipo de
@@ -84,12 +85,16 @@ constexpr int   PWM_FAST    = (int)(PWM_MAX * 0.30f);// 30% do PWM (corrida rapi
 // Compensacao da ASSIMETRIA dos motores (bancada: motor ESQUERDO bem mais forte
 // que o DIREITO). Feed-forward aplicado ao PWM base: FREIA o lado forte
 // (TRIM_L<1) e REFORCA o lado fraco (TRIM_R>1), deixando as duas rodas com
-// velocidade parecida. E so o "chute inicial": o controle por encoder
-// (KP_RETA/CORR_MAX) fecha o resto. AJUSTE FINO na bancada:
+// velocidade parecida. E so o "chute inicial": a correcao em malha fechada
+// (centralizacao ToF + rumo por gyro) fecha o resto. AJUSTE FINO na bancada:
 //   - se ainda PUXA PARA A DIREITA (esquerdo forte): aumente TRIM_R / diminua TRIM_L.
 //   - se passar a PUXAR PARA A ESQUERDA (corrigiu demais): o contrario.
-constexpr float TRIM_L      = 0.82f;                 // freia o motor esquerdo (forte)
-constexpr float TRIM_R      = 1.20f;                 // reforca o motor direito (fraco)
+// Log mostrou que, para andar RETO, a correcao precisava ficar presa em ~+25
+// (puxando p/ direita) -> a base pendia p/ ESQUERDA (TRIM super-reforcava o
+// direito). Reduzido o desbalanco (era 0.82/1.20). AJUSTE FINO: se voltar a
+// puxar p/ direita, aumente TRIM_R / diminua TRIM_L; se puxar p/ esquerda, o contrario.
+constexpr float TRIM_L      = 0.90f;                 // freia menos o motor esquerdo (forte)
+constexpr float TRIM_R      = 1.10f;                 // reforca menos o motor direito (fraco)
 
 // --- ToF frontal ---
 constexpr float BIAS_FRENTE   = 69.0f;   // lida - real (caracterizado)
@@ -143,16 +148,28 @@ constexpr int64_t TILE_TIMEOUT_US = 5000000;  // trava de seguranca por tile (5 
 // (~57 pulsos/cm; 350 ~= 6 cm.) CALIBRAR: aumentar se ainda passar do tile.
 constexpr long    DECEL_COUNTS    = 350;
 
-// --- CENTRALIZACAO / linha reta durante o avanco ---
-// Correcao aplicada aos motores = KP_RETA*(cr-cl) + KP_CENTRO*erro_lateral_ToF.
-// corr>0 => acelera esquerda / freia direita => corrige desvio para a esquerda.
-// Centralizando de menos: AUMENTE KP_CENTRO e/ou CORR_MAX. Se serpentear (oscila
-// entre as paredes): DIMINUA KP_CENTRO ou reduza FILTRO_CORR.
-constexpr float KP_RETA      = 0.60f;    // ganho do reto por encoder (por pulso de dif L/R)
-constexpr float KP_CENTRO    = 0.50f;    // ganho da centralizacao por ToF (por mm de erro)
-constexpr int   CORR_MAX     = 100;      // teto da correcao (alto p/ vencer a assimetria dos motores)
-constexpr float FILTRO_CORR  = 0.20f;    // suavizacao da correcao (0..1; maior = responde mais rapido)
-constexpr float ZONA_MORTA_MM = 8.0f;    // ignora erros laterais menores que isto
+// --- CENTRALIZACAO durante o avanco (ToF POSICAO + GIRO AMORTECE) ---
+// corr>0 => acelera esquerda / freia direita => yaw para a DIREITA.
+//   COM parede(s): a POSICAO manda (ToF). O robo pode precisar manter um ANGULO
+//     corretivo constante para vencer um VIES lateral (motor/mecanica que puxa
+//     sempre pro mesmo lado); por isso o giro entra so como AMORTECIMENTO pela
+//     TAXA angular (-KD_GYRO*taxa), que NAO briga com esse angulo (a taxa e ~0 em
+//     regime permanente). Assim a correcao ToF consegue segurar o angulo e vencer
+//     o vies -- diferente do 'segurar rumo' integrado, que cancelava a correcao.
+//   SEM parede: sem referencia de posicao -> o giro SEGURA o rumo reto do tile.
+//   Encoders NAO entram na correcao (so na distancia do tile).
+// AJUSTE na bancada (veja o log 'eToF/taxa/corr'):
+//   - puxa SEMPRE pro mesmo lado e nao volta: e VIES -> ajuste TRIM_L/TRIM_R
+//     (feed-forward) ate andar reto quase SEM correcao; so depois suba KP_CENTRO.
+//   - serpenteia/oscila: aumente KD_GYRO (amortece) ou reduza KP_CENTRO/FILTRO_CORR.
+//   - corrige pro LADO ERRADO (vai direto pra parede): inverta GYRO_SIGN_RIGHT.
+constexpr float KP_CENTRO    = 1.30f;    // POSICAO por ToF (por mm) -- ALTO: precisa VENCER o TRIM
+constexpr float KP_HEADING   = 6.0f;     // RUMO por gyro (SO quando nao ha parede; por grau)
+constexpr float KD_GYRO      = 0.40f;    // AMORTECIMENTO (baixo: a ~4 Hz a taxa e ruidosa e atrapalha)
+constexpr float GYRO_SIGN_RIGHT = -1.0f; // sinal p/ +taxa/+rumo = yaw DIREITA (padrao MPU: gz>0=esq)
+constexpr int   CORR_MAX     = 150;      // teto da correcao (subiu p/ vencer o vies lateral)
+constexpr float FILTRO_CORR  = 0.45f;    // suavizacao (subiu p/ responder mais rapido; giro amortece)
+constexpr float ZONA_MORTA_MM = 8.0f;    // ignora erros laterais de POSICAO menores que isto
 
 // --- GIRO de 90/180 graus (pivo no eixo, angulo fechado pelo giroscopio) ---
 // Registradores do MPU9250 (nao mexer):
@@ -683,6 +700,10 @@ Avanco andarUmTile(int n_tiles = 1, float parar_frente_mm = -1.0f) {
     float dd_hold = -1.0f;
     int   de_miss = 0;   // ciclos invalidos seguidos na leitura esquerda
     int   dd_miss = 0;   // ciclos invalidos seguidos na leitura direita
+    // Rumo integrado pelo giroscopio NESTE tile (graus), referencia = 0 na
+    // entrada. Usado para amortecer a correcao e manter o robo paralelo.
+    float   ang_tile = 0.0f;
+    int64_t t_gyro   = esp_timer_get_time();
     ESP_LOGI(TAG, ">> Tile: alvo=%ld pulsos (%d tile%s)", alvo, n_tiles,
              n_tiles > 1 ? "s" : "");
 
@@ -690,19 +711,18 @@ Avanco andarUmTile(int n_tiles = 1, float parar_frente_mm = -1.0f) {
         const long cl = std::labs(enc_left());
         const long cr = std::labs(enc_right());
 
-        // Robustez a encoder atrasado/intermitente: se as contagens divergem
-        // muito, o lado que conta MENOS esta falhando -> mede pelo MAIOR e
-        // desliga o reto por encoder (cai para a centralizacao por ToF). Se as
-        // contagens estao proximas, usa a media (comportamento normal).
+        // Robustez a encoder atrasado/intermitente na DISTANCIA: se as contagens
+        // divergem muito, o lado que conta MENOS esta falhando -> mede pelo MAIOR.
+        // Se estao proximas, usa a media (comportamento normal). O rumo/reto NAO
+        // depende mais do encoder (agora e gyro), so a distancia do tile.
         const long maxc = std::max(cl, cr);
         const long minc = std::min(cl, cr);
         const bool enc_diverge = (maxc > 150 && minc < (maxc * 3) / 5);
-        const bool enc_reto_ok = !enc_diverge;
         const long media = enc_diverge ? maxc : (cl + cr) / 2;
         if (enc_diverge && !aviso_enc) {
             aviso_enc = true;
-            ESP_LOGW(TAG, "Encoders divergindo (cl=%ld cr=%ld): medindo pelo maior "
-                          "e usando ToF p/ reto. Verifique o encoder %s.",
+            ESP_LOGW(TAG, "Encoders divergindo (cl=%ld cr=%ld): medindo distancia "
+                          "pelo maior. Verifique o encoder %s.",
                      cl, cr, (cl < cr) ? "ESQUERDO" : "DIREITO");
         }
 
@@ -729,10 +749,7 @@ Avanco andarUmTile(int n_tiles = 1, float parar_frente_mm = -1.0f) {
             return Avanco::TILE_OK;
         }
 
-        // (c) Correcao: reto por encoder + centralizacao ToF quando ha parede.
-        // Com encoder morto, err_reta=0 (usa so ToF; senao a correcao trava no talo).
-        float err_reta = enc_reto_ok ? (float)(cr - cl) : 0.0f; // >0: direita adiantada
-
+        // (c) Correcao de centralizacao: FUSAO ToF (posicao) + gyro (rumo).
         const float de_raw = lerReal(g_tof_esq, BIAS_ESQ);
         const float dd_raw = lerReal(g_tof_dir, BIAS_DIR);
         // Memoriza a ultima leitura valida; se ficar invalida por muitos ciclos
@@ -751,7 +768,25 @@ Avanco andarUmTile(int n_tiles = 1, float parar_frente_mm = -1.0f) {
         else if (wd)       err_tof = dd - PAREDE_ALVO_MM;  // segue parede direita
         if (std::fabs(err_tof) < ZONA_MORTA_MM) err_tof = 0.0f;
 
-        float corr = KP_RETA * err_reta + KP_CENTRO * err_tof;
+        // Giroscopio: taxa angular (dps) e rumo integrado no tile. Se o gyro
+        // falhou (g_mpu_ok=false), ambos ficam ~0 e cai para so-ToF.
+        float gz_dps = 0.0f;
+        if (g_mpu_ok) ler_gz_dps(&gz_dps);
+        const int64_t now_g = esp_timer_get_time();
+        float dt_g = (now_g - t_gyro) / 1e6f;
+        if (dt_g <= 0.0f) dt_g = 1e-3f;
+        if (dt_g > 0.1f)  dt_g = 0.1f;      // ignora saltos (nao integra lixo)
+        t_gyro = now_g;
+        ang_tile += gz_dps * dt_g;
+        const float taxa  = GYRO_SIGN_RIGHT * gz_dps;   // >0 = girando p/ DIREITA
+        const float rumo  = GYRO_SIGN_RIGHT * ang_tile; // >0 = ja girou p/ DIREITA
+
+        // COM parede: ToF define a posicao, giro so AMORTECE (taxa). Assim a
+        // correcao pode manter um angulo corretivo e vencer o vies lateral.
+        // SEM parede: sem posicao -> segura o rumo reto do tile pelo giro.
+        float corr;
+        if (we || wd) corr = KP_CENTRO * err_tof - KD_GYRO * taxa;
+        else          corr = -KP_HEADING * rumo    - KD_GYRO * taxa;
         if (corr >  CORR_MAX) corr =  CORR_MAX;
         if (corr < -CORR_MAX) corr = -CORR_MAX;
         corr_filt += FILTRO_CORR * (corr - corr_filt);
@@ -780,10 +815,10 @@ Avanco andarUmTile(int n_tiles = 1, float parar_frente_mm = -1.0f) {
         if (now - t_log >= 250000) {
             t_log = now;
             ESP_LOGI(TAG,
-                     "  tile: encL=%ld encR=%ld media=%ld/%ld | df=%.0f de=%.0f dd=%.0f"
-                     " | eReta=%+.0f eToF=%+.0f corr=%+d | PWM L=%d R=%d",
-                     cl, cr, media, alvo, df, de, dd,
-                     err_reta, err_tof, (int)corr_filt, dl, dr);
+                     "  tile: media=%ld/%ld | de=%.0f dd=%.0f par=%c%c | eToF=%+.0f"
+                     " taxa=%+.0f rumo=%+.1f corr=%+d | PWM L=%d R=%d",
+                     media, alvo, de, dd, we ? 'E' : '-', wd ? 'D' : '-',
+                     err_tof, taxa, rumo, (int)corr_filt, dl, dr);
         }
 
         // (d) Trava de seguranca por celula (escala com o numero de tiles).
