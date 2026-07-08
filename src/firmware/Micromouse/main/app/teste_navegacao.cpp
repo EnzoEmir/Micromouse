@@ -1,42 +1,14 @@
-/* Arquitetura:
- *   - O modulo Labirinto (maze/maze.hpp) roda o FLOOD-FILL e a maquina de estados
- *     (Explorar -> Refinar -> Voltar -> FastRun). A cada passo ele sensoria as
- *     paredes da celula atual e chama duas primitivas do robo:
- *         virarPara(Direcao ABSOLUTA) -> alinha o robo para N/L/S/O (gira 90/180)
- *         avancar()                   -> anda EXATAMENTE 1 celula (tile)
- *   - Modo HIBRIDO dos sensores nessas primitivas:
- *         ENCODERS (PCNT) : distancia do tile (COUNTS_PER_TILE). NAO faz o reto.
- *         ToFs laterais   : POSICAO no corredor (centraliza entre as paredes).
- *         Giroscopio (MPU): RUMO durante o avanco (amortece/mantem reto, fusao
- *                           com os ToFs) e fecha o giro de 90/180 graus.
- *         ToF frontal     : parada de seguranca + recuo/recentralizacao.
- *
- * FLUXO DA COMPETICAO (UM botao, D19; ver pins.hpp). O botao de tamanho (D23)
- * esta com defeito de hardware, entao o D19 acumula as funcoes pelo tipo de
- * acionamento:
- *   1. TOQUE CURTO no D19 cicla LADO da largada (oeste/leste) + tamanho (4x4/8x8).
- *   2. SEGURAR o D19 (>=0.7 s) confirma: calibra o gyro e LARGA o mapeamento.
- *   3. Ao alcancar o centro, o robo PARA la (nao volta sozinho a largada).
- *   4. Reposicione o robo na largada apontando para o NORTE e de um TOQUE no
- *      D19: comeca a corrida rapida (fast run) com PWM_FAST.
- *
- * ONDE AJUSTAR O MOVIMENTO (bloco PARAMETROS abaixo):
- *   - Distancia por celula ....... COUNTS_PER_TILE
- *   - Angulo do giro (90 graus) .. ALVO_GRAUS + MARGEM_PARADA_GRAUS
- *   - Velocidade de avanco ....... PWM_DRIVE (exploracao) / PWM_FAST (corrida)
- *   - Forca da centralizacao ..... KP_CENTRO / CORR_MAX
- *   - Largada/objetivo do maze ... kOpcoesLargada (lado+tamanho+goal por botao)
- *
- * Sensores (mapeamento fisico real, descoberto na bancada):
- *   FRONTAL  = rotulo FRONT_LEFT  (addr 0x2B)
- *   ESQUERDA = rotulo FRONT       (addr 0x2A)
- *   DIREITA  = rotulo FRONT_RIGHT (addr 0x2C)
- *   GIRO     = MPU9250 (0x68) por I2C (gyro +-1000 dps, 32.8 LSB/dps)
- *   ENCODERS = PCNT nos pinos MOTOR_{LEFT,RIGHT}_ENC_{A,B}_PIN
- *   OBS: encoder DIREITO instavel na bancada; o codigo cai p/ ToF quando diverge.
- *
- * Distancias ToF sempre em mm REAIS (leitura bruta - bias caracterizado).
- */
+// Labirinto (maze/maze.hpp) roda o flood-fill e chama virarPara()/avancar().
+// Sensores hibridos: encoders = distancia do tile; ToFs laterais = posicao no
+// corredor; gyro = rumo/giro; ToF frontal = parada de seguranca.
+//
+// Um unico botao (D19): o de tamanho (D23) tem defeito de hardware.
+//   toque curto = cicla lado+tamanho | segurar (>=0.7s) = calibra gyro e larga.
+//
+// Mapeamento fisico dos sensores (descoberto na bancada, rotulo != posicao real):
+//   FRONTAL  = rotulo FRONT_LEFT  (0x2B) | ESQUERDA = rotulo FRONT (0x2A)
+//   DIREITA  = rotulo FRONT_RIGHT (0x2C) | encoder DIREITO instavel (cai p/ ToF)
+// Distancias ToF sempre em mm reais (bruto - bias caracterizado).
 
 #include <cstdio>
 #include <cmath>
@@ -70,40 +42,25 @@ namespace {
 
 // =====================  PARAMETROS  =====================
 
-// BANCADA: 1 = roda SO o self-test de motor (aciona esquerdo e direito
-// separadamente, frente/re, com log claro) e NAO navega. Use para isolar um
-// canal de motor morto vs. sensor/logica. Volte para 0 na competicao.
+// BANCADA: 1 = so self-test de motor (isola canal esquerdo/direito). 0 na competicao.
 #define MOTOR_SELFTEST 0
 
 constexpr int   PWM_MAX     = 1023;                  // resolucao 10 bits
 
 // --- Avanco ---
-// PWM_DRIVE = VELOCIDADE de avanco (fracao do PWM_MAX). Aumentar = mais rapido.
-// PWM_FAST  = velocidade da corrida rapida (usada so na fase FastRun do maze).
-constexpr int   PWM_DRIVE   = (int)(PWM_MAX * 0.22f);// 22% do PWM (exploracao)
-constexpr int   PWM_FAST    = (int)(PWM_MAX * 0.30f);// 30% do PWM (corrida rapida)
-// Compensacao da ASSIMETRIA dos motores (bancada: motor ESQUERDO bem mais forte
-// que o DIREITO). Feed-forward aplicado ao PWM base: FREIA o lado forte
-// (TRIM_L<1) e REFORCA o lado fraco (TRIM_R>1), deixando as duas rodas com
-// velocidade parecida. E so o "chute inicial": a correcao em malha fechada
-// (centralizacao ToF + rumo por gyro) fecha o resto. AJUSTE FINO na bancada:
-//   - se ainda PUXA PARA A DIREITA (esquerdo forte): aumente TRIM_R / diminua TRIM_L.
-//   - se passar a PUXAR PARA A ESQUERDA (corrigiu demais): o contrario.
-// Log mostrou que, para andar RETO, a correcao precisava ficar presa em ~+25
-// (puxando p/ direita) -> a base pendia p/ ESQUERDA (TRIM super-reforcava o
-// direito). Reduzido o desbalanco (era 0.82/1.20). AJUSTE FINO: se voltar a
-// puxar p/ direita, aumente TRIM_R / diminua TRIM_L; se puxar p/ esquerda, o contrario.
-constexpr float TRIM_L      = 0.90f;                 // freia menos o motor esquerdo (forte)
-constexpr float TRIM_R      = 1.10f;                 // reforca menos o motor direito (fraco)
+constexpr int   PWM_DRIVE   = (int)(PWM_MAX * 0.22f);// exploracao
+constexpr int   PWM_FAST    = (int)(PWM_MAX * 0.30f);// fase FastRun
+// Feed-forward p/ assimetria dos motores (esquerdo mais forte): freia o forte,
+// reforca o fraco. Chute inicial; a malha fechada (ToF+gyro) fecha o resto.
+constexpr float TRIM_L      = 0.90f;
+constexpr float TRIM_R      = 1.10f;
 
 // --- ToF frontal ---
 constexpr float BIAS_FRENTE   = 69.0f;   // lida - real (caracterizado)
 constexpr float FRONT_STOP_MM = 50.0f;   // para se a parede estiver a <= 5 cm
 constexpr int   CONFIRMACOES  = 2;        // leituras seguidas p/ confirmar parede
-// Dash da corrida rapida: a reta TERMINA numa parede, entao paramos pela PAREDE
-// FRONTAL (referencia absoluta que corrige a deriva do encoder no trecho longo),
-// e nao pela contagem de pulsos. Para a FRONT_DASH_STOP_MM da parede (com folga
-// p/ nao bater) e comeca a desacelerar a (stop + DECEL_FRENTE_MM). CALIBRAR.
+// Dash da fast run: a reta termina numa parede -> para por ela (nao por pulsos),
+// o que corrige a deriva do encoder no trecho longo.
 constexpr float FRONT_DASH_STOP_MM = 75.0f;
 constexpr float DECEL_FRENTE_MM    = 80.0f;
 
@@ -118,10 +75,8 @@ constexpr int   PULSO_MS    = 70;
 constexpr int   ASSENTA_MS  = 250;
 constexpr int   MAX_AJUSTES = 25;
 
-// --- Folga para pivotar (evita travar a quina na parede ao girar) ---
-// Antes de um giro, se houver parede logo a frente e o robo estiver perto
-// demais, ele recua ate abrir esta folga (o giro e um pivo no eixo: a quina
-// dianteira varre para frente e raspa se estiver colada na parede).
+// Antes de girar, recua ate esta folga se houver parede perto (senao a quina
+// raspa na parede durante o pivo no eixo).
 constexpr float PIVO_FOLGA_MM = 80.0f;
 
 // --- ToFs laterais ---
@@ -130,49 +85,29 @@ constexpr float BIAS_DIR = 52.0f;        // lida - real (direita)
 constexpr int   N_AMOSTRAS = 7;
 constexpr float WALL_THRESHOLD_MM = 100.0f; // < isto = ha parede do lado
 constexpr float PAREDE_ALVO_MM    = 50.0f;  // distancia desejada de cada parede
-// Quantos ciclos de leitura lateral INVALIDA segurar o ultimo valor valido
-// durante o avanco (cobre dropouts do ToF ao colar na parede). Alem disso,
-// considera o lado sem parede (evita arrastar leitura obsoleta entre celulas).
-constexpr int   HOLD_MAX_MISS     = 6;
+constexpr int   HOLD_MAX_MISS     = 6;      // ciclos p/ segurar ultima leitura valida (dropout do ToF)
 
-// --- Distancia de 1 CELULA (medida pelos encoders, PCNT quadratura x4) ---
-// COUNTS_PER_TILE = pulsos de encoder por celula. Aumentar = anda MAIS por
-// celula; diminuir = anda MENOS. (~57 pulsos/cm; ~1065 ~= 18 cm nesta bancada).
-// Parava ~2 cm curto do centro do tile -> +115 pulsos (950 -> 1065).
-constexpr long    COUNTS_PER_TILE = 1065;
+// --- Distancia de 1 CELULA (encoders, PCNT quadratura x4) ---
+// ~57 pulsos/cm. Calibrado entre 950 (parava curto) e 1065 (passava) -> 1010.
+constexpr long    COUNTS_PER_TILE = 950;
 constexpr float   FRENTE_LIVRE_MM = 120.0f;   // df acima disso = frente ABERTA (sem parede)
 constexpr int64_t TILE_TIMEOUT_US = 5000000;  // trava de seguranca por tile (5 s)
-// Desaceleracao no fim do avanco: no ultimo trecho antes do alvo, se estiver em
-// alta velocidade (corrida rapida), cai para PWM_DRIVE para nao PASSAR do tile
-// nem bater na parede por inercia. So afeta quando pwm_base > PWM_DRIVE.
-// (~57 pulsos/cm; 350 ~= 6 cm.) CALIBRAR: aumentar se ainda passar do tile.
+// Perto do fim do tile, cai de PWM_FAST p/ PWM_DRIVE (mesmo coast da calibracao).
 constexpr long    DECEL_COUNTS    = 350;
 
-// --- CENTRALIZACAO durante o avanco (ToF POSICAO + GIRO AMORTECE) ---
-// corr>0 => acelera esquerda / freia direita => yaw para a DIREITA.
-//   COM parede(s): a POSICAO manda (ToF). O robo pode precisar manter um ANGULO
-//     corretivo constante para vencer um VIES lateral (motor/mecanica que puxa
-//     sempre pro mesmo lado); por isso o giro entra so como AMORTECIMENTO pela
-//     TAXA angular (-KD_GYRO*taxa), que NAO briga com esse angulo (a taxa e ~0 em
-//     regime permanente). Assim a correcao ToF consegue segurar o angulo e vencer
-//     o vies -- diferente do 'segurar rumo' integrado, que cancelava a correcao.
-//   SEM parede: sem referencia de posicao -> o giro SEGURA o rumo reto do tile.
-//   Encoders NAO entram na correcao (so na distancia do tile).
-// AJUSTE na bancada (veja o log 'eToF/taxa/corr'):
-//   - puxa SEMPRE pro mesmo lado e nao volta: e VIES -> ajuste TRIM_L/TRIM_R
-//     (feed-forward) ate andar reto quase SEM correcao; so depois suba KP_CENTRO.
-//   - serpenteia/oscila: aumente KD_GYRO (amortece) ou reduza KP_CENTRO/FILTRO_CORR.
-//   - corrige pro LADO ERRADO (vai direto pra parede): inverta GYRO_SIGN_RIGHT.
-constexpr float KP_CENTRO    = 1.30f;    // POSICAO por ToF (por mm) -- ALTO: precisa VENCER o TRIM
-constexpr float KP_HEADING   = 6.0f;     // RUMO por gyro (SO quando nao ha parede; por grau)
-constexpr float KD_GYRO      = 0.40f;    // AMORTECIMENTO (baixo: a ~4 Hz a taxa e ruidosa e atrapalha)
-constexpr float GYRO_SIGN_RIGHT = -1.0f; // sinal p/ +taxa/+rumo = yaw DIREITA (padrao MPU: gz>0=esq)
-constexpr int   CORR_MAX     = 150;      // teto da correcao (subiu p/ vencer o vies lateral)
-constexpr float FILTRO_CORR  = 0.45f;    // suavizacao (subiu p/ responder mais rapido; giro amortece)
-constexpr float ZONA_MORTA_MM = 8.0f;    // ignora erros laterais de POSICAO menores que isto
+// --- Centralizacao durante o avanco (ToF = posicao, gyro = amortecimento) ---
+// corr>0 => acelera esquerda / freia direita => yaw p/ direita.
+// Com parede: ToF define a posicao (pode manter um angulo p/ vencer vies
+// lateral); o gyro so amortece pela taxa. Sem parede: gyro segura o rumo reto.
+constexpr float KP_CENTRO    = 1.30f;
+constexpr float KP_HEADING   = 6.0f;
+constexpr float KD_GYRO      = 0.40f;
+constexpr float GYRO_SIGN_RIGHT = -1.0f; // MPU: gz>0 = giro p/ esquerda
+constexpr int   CORR_MAX     = 150;
+constexpr float FILTRO_CORR  = 0.45f;
+constexpr float ZONA_MORTA_MM = 8.0f;
 
-// --- GIRO de 90/180 graus (pivo no eixo, angulo fechado pelo giroscopio) ---
-// Registradores do MPU9250 (nao mexer):
+// --- Giro de 90/180 graus (pivo no eixo, fechado pelo gyro) ---
 constexpr uint8_t MPU9250_ADDR        = 0x68;
 constexpr uint8_t MPU_REG_PWR_MGMT_1  = 0x6B;
 constexpr uint8_t MPU_REG_SMPLRT_DIV  = 0x19;
@@ -181,37 +116,26 @@ constexpr uint8_t MPU_REG_GYRO_CONFIG = 0x1B;
 constexpr uint8_t MPU_REG_ACCEL_CONFIG  = 0x1C;
 constexpr uint8_t MPU_REG_ACCEL_CONFIG2 = 0x1D;
 constexpr uint8_t MPU_REG_ACCEL_XOUT_H  = 0x3B;
-constexpr float   GYRO_LSB_POR_DPS    = 32.8f;  // +-1000 dps (evita saturacao no pivo)
-constexpr int     PWM_GIRO            = (int)(PWM_MAX * 0.35f); // 35% (fase rapida do giro)
-constexpr int     PWM_GIRO_SLOW       = (int)(PWM_MAX * 0.22f); // 22% (fase lenta, aproximacao)
-// >>> AJUSTE DO GIRO DE 90 GRAUS <<<
-// ALVO_GRAUS: angulo desejado do giro (90). MARGEM_PARADA_GRAUS: quanto antes do
-// alvo o motor e cortado (a inercia completa o resto). Se o robo:
-//   - gira de MENOS (fecha < 90): DIMINUA MARGEM_PARADA_GRAUS.
-//   - gira de MAIS  (passa de 90): AUMENTE MARGEM_PARADA_GRAUS.
-constexpr float   ALVO_GRAUS          = 90.0f;  // angulo alvo do giro
-constexpr float   APPROACH_GRAUS      = 35.0f;  // faltando isto p/ o alvo, entra na fase lenta
-constexpr float   MARGEM_PARADA_GRAUS = 25.0f;  // corta o motor a (ALVO - isto); inercia fecha o resto
+constexpr float   GYRO_LSB_POR_DPS    = 32.8f;  // +-1000 dps
+constexpr int     PWM_GIRO            = (int)(PWM_MAX * 0.35f); // fase rapida
+constexpr int     PWM_GIRO_SLOW       = (int)(PWM_MAX * 0.22f); // fase lenta (aproximacao)
+// Motor corta em (ALVO - MARGEM) e a inercia completa; fase lenta comeca em
+// (ALVO - APPROACH). Manter APPROACH > MARGEM (janela lenta = APPROACH - MARGEM).
+constexpr float   ALVO_GRAUS          = 90.0f;
+constexpr float   APPROACH_GRAUS      = 45.0f;
+constexpr float   MARGEM_PARADA_GRAUS = 35.0f;
 constexpr int     SETTLE_MS           = 400;
-constexpr int64_t GIRO_TIMEOUT_US     = 8000000; // trava de seguranca por giro
-// Correcao fina do giro (malha fechada): o corte + inercia costuma parar ANTES
-// de 90 graus e de forma inconsistente (varia com bateria/atrito). Apos assentar,
-// completa o giro com pulsos curtos ate entrar na tolerancia.
-//   - se ainda fecha CURTO: aumente MAX_TRIMS_GIRO ou TRIM_GIRO_PULSO_MS.
-//   - se passar de 90 (overshoot no trim): reduza TRIM_GIRO_PULSO_MS.
-constexpr float   TOL_GIRO_GRAUS      = 3.0f;   // aceita 90 +/- isto
-constexpr int     TRIM_GIRO_PULSO_MS  = 60;     // duracao de cada pulso de correcao
-constexpr int     TRIM_GIRO_SETTLE_MS = 120;    // assentamento/medida entre pulsos
-constexpr int     MAX_TRIMS_GIRO      = 12;     // teto de pulsos (trava de seguranca)
+constexpr int64_t GIRO_TIMEOUT_US     = 8000000;
+// Corte+inercia costuma fechar curto/inconsistente: apos assentar, completa
+// o giro com pulsos curtos ate entrar na tolerancia.
+constexpr float   TOL_GIRO_GRAUS      = 3.0f;
+constexpr int     TRIM_GIRO_PULSO_MS  = 60;
+constexpr int     TRIM_GIRO_SETTLE_MS = 120;
+constexpr int     MAX_TRIMS_GIRO      = 12;
 
 // --- Labirinto (flood-fill) ---
-// O botao (D19) cicla as combinacoes LADO_DE_LARGADA + TAMANHO abaixo. O NORTE
-// do modelo e SEMPRE a frente do robo na largada (o Labirinto forca heading=Norte),
-// entao a ORIENTACAO inicial nao muda entre as opcoes -- muda so a CELULA:
-//   ESQUERDA (Oeste): canto oeste, x = 0.
-//   DIREITA  (Leste): canto leste, x = n-1.
-// Em ambos y = 0 (fileira de tras) e a frente aponta para o centro (+y). O GOAL
-// (uma celula do bloco central 2x2) acompanha o tamanho: 4x4 -> {1,1}; 8x8 -> {3,3}.
+// NORTE do modelo = sempre a frente do robo na largada; so a CELULA muda:
+// oeste -> x=0, leste -> x=n-1, y=0 sempre. GOAL: 4x4 -> {1,1}; 8x8 -> {3,3}.
 enum class LadoLargada : uint8_t { Oeste, Leste };
 
 struct OpcaoLargada {
@@ -242,15 +166,14 @@ inline const char *ladoJson(LadoLargada l) {
 }
 
 // --- Telemetria / Wi-Fi (envio para o servidor web) ---
-// >>> PREENCHER NO DIA DA COMPETICAO: SSID/senha do hotspot e IP do servidor <<<
+// PREENCHER NO DIA: SSID/senha do hotspot e IP do servidor.
 const char* WIFI_SSID   = "dudaa28-Latitude-3420";
 const char* WIFI_PASS   = "ck0fQGxy";
 const char* BACKEND_URL = "http://10.42.0.1:8000/api/telemetria/pacote";
 constexpr int   HEARTBEAT_MS   = 1500;   // periodo do heartbeat (tipo 4)
 constexpr float TEMP_CRITICA_C = 60.0f;  // limiar do alerta critico (tipo 5)
 constexpr float TILE_M         = 0.18f;  // 1 tile = 18 cm (ver COUNTS_PER_TILE)
-// Temperatura vem do proprio MPU9250 (registrador TEMP_OUT), sem sensor extra.
-constexpr uint8_t MPU_REG_TEMP_OUT_H = 0x41;
+constexpr uint8_t MPU_REG_TEMP_OUT_H = 0x41; // temp vem do proprio MPU9250
 constexpr float   TEMP_SENS_LSB_C    = 333.87f; // sensibilidade (LSB/C) do MPU9250
 constexpr float   TEMP_OFFSET_C      = 21.0f;   // offset do sensor
 
@@ -667,19 +590,14 @@ int pwmAvanco() {
     return (g_maze.fase() == Labirinto::Fase::FastRun) ? PWM_FAST : PWM_DRIVE;
 }
 
-// Anda n_tiles tiles contando PULSOS de encoder, SEM parar entre eles. Mantem
-// linha reta pela diferenca L/R dos encoders e adiciona centralizacao ToF suave
-// (hibrido). Desacelera no fim para nao passar do tile em alta velocidade.
-//   parar_frente_mm >= 0: modo DASH (reta que termina em parede). A parada
-//   PRIMARIA passa a ser a PAREDE FRONTAL a essa distancia (referencia absoluta
-//   que corrige a deriva do encoder no trecho longo); a contagem de pulsos vira
-//   apenas o teto de seguranca. Padrao (-1) para 1 tile pela contagem, com o ToF
-//   frontal so como parada de seguranca (FRONT_STOP_MM).
+// Anda n_tiles tiles contando pulsos de encoder, sem parar entre eles, com
+// centralizacao ToF+gyro. parar_frente_mm >= 0: modo dash (reta que termina em
+// parede) -> a parada primaria vira a parede frontal; a contagem de pulsos e
+// so o teto de seguranca.
 Avanco andarUmTile(int n_tiles = 1, float parar_frente_mm = -1.0f) {
     if (n_tiles < 1) n_tiles = 1;
     const bool para_frente = (parar_frente_mm >= 0.0f);
-    // Teto de pulsos. No modo dash, meio tile alem (a parada real e a parede);
-    // se por algum motivo a parede nao for vista, o encoder segura o avanco.
+    // Teto de pulsos; no dash, meio tile alem (parada real e a parede).
     const long alvo = (long)COUNTS_PER_TILE * n_tiles +
                       (para_frente ? COUNTS_PER_TILE / 2 : 0);
     const float stop_frente = para_frente ? parar_frente_mm : FRONT_STOP_MM;
@@ -691,18 +609,12 @@ Avanco andarUmTile(int n_tiles = 1, float parar_frente_mm = -1.0f) {
     int   confirmados = 0;
     float corr_filt   = 0.0f;
     bool  aviso_enc   = false; // avisa 1x se detectar encoder morto
-    // Ultima leitura lateral VALIDA neste tile. O VL53L0X perde a medida de
-    // forma intermitente quando o robo esta MUITO perto da parede (abaixo da
-    // faixa util do sensor); sem isso a parede "some" e a centralizacao para de
-    // corrigir. Segura o ultimo valor valido ate chegar outra leitura (perto ou
-    // longe), entao qualquer leitura valida atualiza e ele se auto-corrige.
+    // Ultima leitura lateral valida (segura durante dropouts do ToF perto da parede).
     float de_hold = -1.0f;
     float dd_hold = -1.0f;
-    int   de_miss = 0;   // ciclos invalidos seguidos na leitura esquerda
-    int   dd_miss = 0;   // ciclos invalidos seguidos na leitura direita
-    // Rumo integrado pelo giroscopio NESTE tile (graus), referencia = 0 na
-    // entrada. Usado para amortecer a correcao e manter o robo paralelo.
-    float   ang_tile = 0.0f;
+    int   de_miss = 0;
+    int   dd_miss = 0;
+    float   ang_tile = 0.0f; // rumo integrado pelo gyro NESTE tile (0 na entrada)
     int64_t t_gyro   = esp_timer_get_time();
     ESP_LOGI(TAG, ">> Tile: alvo=%ld pulsos (%d tile%s)", alvo, n_tiles,
              n_tiles > 1 ? "s" : "");
@@ -711,10 +623,8 @@ Avanco andarUmTile(int n_tiles = 1, float parar_frente_mm = -1.0f) {
         const long cl = std::labs(enc_left());
         const long cr = std::labs(enc_right());
 
-        // Robustez a encoder atrasado/intermitente na DISTANCIA: se as contagens
-        // divergem muito, o lado que conta MENOS esta falhando -> mede pelo MAIOR.
-        // Se estao proximas, usa a media (comportamento normal). O rumo/reto NAO
-        // depende mais do encoder (agora e gyro), so a distancia do tile.
+        // Se as contagens divergem muito, o lado que conta menos esta falhando
+        // -> mede pelo maior; senao usa a media.
         const long maxc = std::max(cl, cr);
         const long minc = std::min(cl, cr);
         const bool enc_diverge = (maxc > 150 && minc < (maxc * 3) / 5);
@@ -726,9 +636,7 @@ Avanco andarUmTile(int n_tiles = 1, float parar_frente_mm = -1.0f) {
                      cl, cr, (cl < cr) ? "ESQUERDO" : "DIREITO");
         }
 
-        // (a) Parada pela parede frontal. No modo dash e a parada PRIMARIA
-        // (stop_frente = FRONT_DASH_STOP_MM, referencia absoluta); caso contrario
-        // e so a parada de seguranca (stop_frente = FRONT_STOP_MM).
+        // (a) Parada pela parede frontal (primaria no dash; seguranca no normal).
         const float df = lerReal(g_tof_front, BIAS_FRENTE);
         if (df >= 0.0f && df <= stop_frente) {
             if (++confirmados >= CONFIRMACOES) {
@@ -752,8 +660,6 @@ Avanco andarUmTile(int n_tiles = 1, float parar_frente_mm = -1.0f) {
         // (c) Correcao de centralizacao: FUSAO ToF (posicao) + gyro (rumo).
         const float de_raw = lerReal(g_tof_esq, BIAS_ESQ);
         const float dd_raw = lerReal(g_tof_dir, BIAS_DIR);
-        // Memoriza a ultima leitura valida; se ficar invalida por muitos ciclos
-        // seguidos, descarta (o lado passou a ser considerado sem parede).
         if (de_raw >= 0.0f)            { de_hold = de_raw; de_miss = 0; }
         else if (++de_miss > HOLD_MAX_MISS) de_hold = -1.0f;
         if (dd_raw >= 0.0f)            { dd_hold = dd_raw; dd_miss = 0; }
@@ -768,8 +674,6 @@ Avanco andarUmTile(int n_tiles = 1, float parar_frente_mm = -1.0f) {
         else if (wd)       err_tof = dd - PAREDE_ALVO_MM;  // segue parede direita
         if (std::fabs(err_tof) < ZONA_MORTA_MM) err_tof = 0.0f;
 
-        // Giroscopio: taxa angular (dps) e rumo integrado no tile. Se o gyro
-        // falhou (g_mpu_ok=false), ambos ficam ~0 e cai para so-ToF.
         float gz_dps = 0.0f;
         if (g_mpu_ok) ler_gz_dps(&gz_dps);
         const int64_t now_g = esp_timer_get_time();
@@ -781,9 +685,6 @@ Avanco andarUmTile(int n_tiles = 1, float parar_frente_mm = -1.0f) {
         const float taxa  = GYRO_SIGN_RIGHT * gz_dps;   // >0 = girando p/ DIREITA
         const float rumo  = GYRO_SIGN_RIGHT * ang_tile; // >0 = ja girou p/ DIREITA
 
-        // COM parede: ToF define a posicao, giro so AMORTECE (taxa). Assim a
-        // correcao pode manter um angulo corretivo e vencer o vies lateral.
-        // SEM parede: sem posicao -> segura o rumo reto do tile pelo giro.
         float corr;
         if (we || wd) corr = KP_CENTRO * err_tof - KD_GYRO * taxa;
         else          corr = -KP_HEADING * rumo    - KD_GYRO * taxa;
@@ -791,11 +692,7 @@ Avanco andarUmTile(int n_tiles = 1, float parar_frente_mm = -1.0f) {
         if (corr < -CORR_MAX) corr = -CORR_MAX;
         corr_filt += FILTRO_CORR * (corr - corr_filt);
 
-        // Desacelera no fim do trecho: em alta velocidade (fast run) cai para
-        // PWM_DRIVE, para o coast final ser o mesmo da exploracao (onde
-        // COUNTS_PER_TILE foi calibrado) -> nao passa do tile nem bate na parede.
-        // Gatilho por CONTAGEM (no modo normal) ou pela DISTANCIA FRONTAL (dash,
-        // onde a parada e a parede). Sem efeito na exploracao (pwm_base=PWM_DRIVE).
+        // Perto do fim (contagem ou parede frontal no dash), cai p/ PWM_DRIVE.
         const bool perto_fim    = (alvo - media) < DECEL_COUNTS;
         const bool perto_frente = para_frente && df >= 0.0f &&
                                   df < stop_frente + DECEL_FRENTE_MM;
@@ -953,11 +850,7 @@ const char *nome_resultado(Labirinto::Resultado r) {
 }
 
 #if MOTOR_SELFTEST
-// Bancada: aciona UM motor de cada vez (frente/re), independente de
-// sensores/gyro/navegacao, para isolar canal esquerdo vs. direito. Enquanto um
-// lado gira, meca com o multimetro: PWM_PIN deve ter onda ~40%, um dos IN em
-// 3V3 e o outro em 0 V, e a saida da ponte H deve ter tensao diferencial. Se os
-// GPIOs chaveiam certo mas o motor nao gira -> hardware (ponte H / solda / fio).
+// Aciona um motor de cada vez (frente/re) p/ isolar canal esquerdo vs. direito.
 // Nunca retorna.
 void motorSelfTest() {
     initMotores();
@@ -1054,28 +947,19 @@ extern "C" void app_main(void) {
     initMotores();
     motores_para();
 
-    // 5.1) Wi-Fi NAO-bloqueante: dispara a conexao e segue o boot. Cada envio
-    //      consulta wifi_is_connected() na hora; a navegacao roda igual sem AP
-    //      (a reconexao continua em background se a rede cair/voltar).
+    // Wi-Fi nao-bloqueante: dispara a conexao e segue o boot.
     inicializar_nvs();
     ESP_LOGI(TAG, "Conectando ao Wi-Fi '%s' em background...", WIFI_SSID);
     wifi_init_sta(WIFI_SSID, WIFI_PASS, /*timeout_ms=*/0);
 
-    // 5.2) Botao de controle. So o D19 e usado: o D23 (tamanho) esta com defeito
-    //      de hardware, entao o D19 faz tudo (toque curto = tamanho, segurar =
-    //      largada; ver passo 6). botao_size fica declarado como reserva para o
-    //      caso do hardware do D23 ser consertado depois.
+    // D23 (tamanho) com defeito de hardware; botao_size fica reservado.
     Botao botao_start(BUTTON_START_PIN);
     Botao botao_size(BUTTON_SIZE_PIN);
     botao_start.init();
     botao_size.init();
-    (void)botao_size; // atualmente sem uso (D23 defeituoso)
+    (void)botao_size;
 
-    // 6) Selecao de LADO + TAMANHO da largada com UM UNICO botao (D19), porque o
-    //    botao de tamanho (D23) esta com defeito de hardware. O D19 acumula as
-    //    funcoes pelo tipo de acionamento:
-    //       TOQUE CURTO    -> cicla as combinacoes lado+tamanho (kOpcoesLargada).
-    //       SEGURAR >=0.7s -> confirma a combinacao e LARGA o mapeamento.
+    // D19 acumula as funcoes: toque curto cicla lado+tamanho, segurar >=0.7s confirma.
     int idx_lab = 0;
     {
         const OpcaoLargada &o = kOpcoesLargada[idx_lab];
@@ -1103,9 +987,6 @@ extern "C" void app_main(void) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    // 6.1) Labirinto (flood-fill) com o lado/tamanho/goal escolhidos. A largada
-    //      varia so na CELULA (lado oeste/leste); o heading e sempre Norte
-    //      (a frente do robo na largada = Norte do modelo).
     const OpcaoLargada opc = kOpcoesLargada[idx_lab];
     const Labirinto::Posicao START = celulaLargada(opc);
     const Labirinto::Posicao GOAL  = opc.goal;
@@ -1122,12 +1003,8 @@ extern "C" void app_main(void) {
              (int)g_maze.tamanho(), (int)g_maze.tamanho(), nomeLado(opc.lado),
              (unsigned)START.x, (unsigned)START.y, (unsigned)GOAL.x, (unsigned)GOAL.y);
 
-    // 7) Calibracao do gyro logo apos o botao (robo PARADO na largada).
     if (g_mpu_ok) { ESP_LOGI(TAG, "Calibrando gyro (mantenha o robo parado)..."); calibrar_bias_z(); }
 
-    // 7.1) Marco zero da corrida + pacote 0 (Config Inicial) + task de heartbeat.
-    //      Se o Wi-Fi ainda nao conectou, a tarefa_heartbeat envia a config
-    //      atrasada assim que a conexao chegar.
     g_t0_ms = esp_timer_get_time() / 1000;
     atualizar_bateria();
     atualizar_temp();
@@ -1138,8 +1015,6 @@ extern "C" void app_main(void) {
     }
     xTaskCreate(tarefa_heartbeat, "heartbeat", 4096, nullptr, 3, nullptr); // tipo 4
 
-    // 8) MAPEAMENTO: sensoria paredes -> passo (que gira e avanca) ate alcancar
-    //    o centro. O robo PARA no centro (nao volta sozinho a largada).
     ESP_LOGI(TAG, "=== MAPEAMENTO (ate o centro) ===");
     bool mapeou = false;
     bool abortou = false;
@@ -1155,9 +1030,7 @@ extern "C" void app_main(void) {
         // Pacote 1: entrou em nova celula e sensoriou paredes (descoberta).
         if (g_maze.sensoriou()) {
             const Labirinto::Posicao ps = g_maze.posicaoSensoriada();
-            const uint8_t w = g_maze.paredes(ps); // bits N=1,S=2,L=4,O=8 == campo 'w'
-            // Debug: o conteudo exato do pacote 1 com as paredes decodificadas
-            // (subir para LOGI/LOGW so quando precisar conferir com o web).
+            const uint8_t w = g_maze.paredes(ps); // bits N=1,S=2,L=4,O=8
             ESP_LOGD(TAG, "TELE p1 -> x=%u y=%u w=%u [N=%d S=%d L=%d O=%d]",
                      (unsigned)ps.x, (unsigned)ps.y, (unsigned)w,
                      (w & Labirinto::ParedeNorte) ? 1 : 0,
@@ -1185,8 +1058,6 @@ extern "C" void app_main(void) {
         }
     }
 
-    // 9) FAST RUN manual: reposicione o robo na LARGADA apontando para o NORTE
-    //    e aperte o botao 1. O mapa aprendido e mantido (prepararFastRun).
     if (mapeou && !abortou) {
         ESP_LOGI(TAG, "Reposicione o robo na largada %s {%u,%u} apontando para o "
                       "NORTE (a mesma frente da largada) e aperte o botao (D19) "
@@ -1210,12 +1081,8 @@ extern "C" void app_main(void) {
         while (true) {
             if (abortarPorTemperatura()) break;
 
-            // Otimizacao da reta: se o caminho otimo segue RETO por mais de 1
-            // tile e o trecho termina numa PAREDE (curva forcada), dirige o
-            // trecho inteiro SEM PARAR entre os tiles e para pela PAREDE FRONTAL
-            // (referencia absoluta que corrige a deriva do encoder no trecho
-            // longo), com desaceleracao na aproximacao. Depois recentraliza e
-            // atualiza o modelo do maze, voltando ao ciclo normal que faz a curva.
+            // Reta de 2+ tiles terminando em parede: dash sem parar entre tiles,
+            // parando pela parede frontal.
             {
                 Labirinto::Direcao dir_saida = Labirinto::Direcao::Nenhuma;
                 bool termina_parede = false;
