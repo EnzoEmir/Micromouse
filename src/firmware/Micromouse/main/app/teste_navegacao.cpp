@@ -13,7 +13,7 @@
  * FLUXO DA COMPETICAO (UM botao, D19; ver pins.hpp). O botao de tamanho (D23)
  * esta com defeito de hardware, entao o D19 acumula as funcoes pelo tipo de
  * acionamento:
- *   1. TOQUE CURTO no D19 cicla o tamanho do labirinto (4x4 <-> 8x8; GOAL segue).
+ *   1. TOQUE CURTO no D19 cicla LADO da largada (oeste/leste) + tamanho (4x4/8x8).
  *   2. SEGURAR o D19 (>=0.7 s) confirma: calibra o gyro e LARGA o mapeamento.
  *   3. Ao alcancar o centro, o robo PARA la (nao volta sozinho a largada).
  *   4. Reposicione o robo na largada apontando para o NORTE e de um TOQUE no
@@ -24,7 +24,7 @@
  *   - Angulo do giro (90 graus) .. ALVO_GRAUS + MARGEM_PARADA_GRAUS
  *   - Velocidade de avanco ....... PWM_DRIVE (exploracao) / PWM_FAST (corrida)
  *   - Forca da centralizacao ..... KP_CENTRO / CORR_MAX
- *   - Largada/objetivo do maze ... START / kOpcoesLab (tamanho+goal por botao)
+ *   - Largada/objetivo do maze ... kOpcoesLargada (lado+tamanho+goal por botao)
  *
  * Sensores (mapeamento fisico real, descoberto na bancada):
  *   FRONTAL  = rotulo FRONT_LEFT  (addr 0x2B)
@@ -188,22 +188,37 @@ constexpr int     TRIM_GIRO_SETTLE_MS = 120;    // assentamento/medida entre pul
 constexpr int     MAX_TRIMS_GIRO      = 12;     // teto de pulsos (trava de seguranca)
 
 // --- Labirinto (flood-fill) ---
-// O tamanho e escolhido em campo pelo botao 2 (D23), que cicla as opcoes
-// abaixo. O GOAL (celula do bloco central 2x2) acompanha o tamanho:
-// 4x4 -> {1,1}; 8x8 -> {3,3}. GOAL do flood-fill e uma celula UNICA; para um
-// bloco central 2x2 aponte para uma das celulas do bloco.
-struct OpcaoLabirinto {
+// O botao (D19) cicla as combinacoes LADO_DE_LARGADA + TAMANHO abaixo. O NORTE
+// do modelo e SEMPRE a frente do robo na largada (o Labirinto forca heading=Norte),
+// entao a ORIENTACAO inicial nao muda entre as opcoes -- muda so a CELULA:
+//   ESQUERDA (Oeste): canto oeste, x = 0.
+//   DIREITA  (Leste): canto leste, x = n-1.
+// Em ambos y = 0 (fileira de tras) e a frente aponta para o centro (+y). O GOAL
+// (uma celula do bloco central 2x2) acompanha o tamanho: 4x4 -> {1,1}; 8x8 -> {3,3}.
+enum class LadoLargada : uint8_t { Oeste, Leste };
+
+struct OpcaoLargada {
     Labirinto::Tamanho tamanho;
+    LadoLargada        lado;
     Labirinto::Posicao goal;
 };
-constexpr OpcaoLabirinto kOpcoesLab[] = {
-    {Labirinto::Tamanho::k4x4, {1, 1}},
-    {Labirinto::Tamanho::k8x8, {3, 3}},
+constexpr OpcaoLargada kOpcoesLargada[] = {
+    {Labirinto::Tamanho::k4x4, LadoLargada::Oeste, {1, 1}},
+    {Labirinto::Tamanho::k4x4, LadoLargada::Leste, {1, 1}},
+    {Labirinto::Tamanho::k8x8, LadoLargada::Oeste, {3, 3}},
+    {Labirinto::Tamanho::k8x8, LadoLargada::Leste, {3, 3}},
 };
-constexpr int kNumOpcoesLab = sizeof(kOpcoesLab) / sizeof(kOpcoesLab[0]);
-constexpr Labirinto::Posicao START = {0, 0};   // celula de largada
-// A largada assume a frente do robo apontando para NORTE (+y). A direita fica
-// LESTE (+x), a esquerda OESTE. O modulo Labirinto tambem forca heading=Norte.
+constexpr int kNumOpcoesLargada = sizeof(kOpcoesLargada) / sizeof(kOpcoesLargada[0]);
+
+// Celula de largada de uma opcao: x = 0 no oeste, x = n-1 no leste; y = 0 sempre.
+inline Labirinto::Posicao celulaLargada(const OpcaoLargada &o) {
+    const uint8_t n = static_cast<uint8_t>(o.tamanho);
+    const uint8_t x = (o.lado == LadoLargada::Oeste) ? 0 : static_cast<uint8_t>(n - 1);
+    return {x, 0};
+}
+inline const char *nomeLado(LadoLargada l) {
+    return (l == LadoLargada::Oeste) ? "ESQUERDA (Oeste)" : "DIREITA (Leste)";
+}
 
 // --- Telemetria / Wi-Fi (envio para o servidor web) ---
 // >>> PREENCHER NO DIA DA COMPETICAO: SSID/senha do hotspot e IP do servidor <<<
@@ -991,46 +1006,54 @@ extern "C" void app_main(void) {
     botao_size.init();
     (void)botao_size; // atualmente sem uso (D23 defeituoso)
 
-    // 6) Selecao do tamanho + largada com UM UNICO botao (D19), porque o botao
-    //    de tamanho (D23) esta com defeito de hardware. O D19 acumula as duas
+    // 6) Selecao de LADO + TAMANHO da largada com UM UNICO botao (D19), porque o
+    //    botao de tamanho (D23) esta com defeito de hardware. O D19 acumula as
     //    funcoes pelo tipo de acionamento:
-    //       TOQUE CURTO    -> cicla o tamanho 4x4 <-> 8x8 (GOAL acompanha: {1,1}/{3,3}).
-    //       SEGURAR >=0.7s -> confirma o tamanho e LARGA o mapeamento.
+    //       TOQUE CURTO    -> cicla as combinacoes lado+tamanho (kOpcoesLargada).
+    //       SEGURAR >=0.7s -> confirma a combinacao e LARGA o mapeamento.
     int idx_lab = 0;
     {
-        const int t0 = (int)kOpcoesLab[idx_lab].tamanho;
-        ESP_LOGI(TAG, "Aguardando largada: TOQUE CURTO no botao (D19) cicla o "
-                      "tamanho [%dx%d]; SEGURE (>=0.7s) para iniciar o mapeamento.",
-                 t0, t0);
+        const OpcaoLargada &o = kOpcoesLargada[idx_lab];
+        const int t = (int)o.tamanho;
+        ESP_LOGI(TAG, "Aguardando largada: TOQUE CURTO cicla lado+tamanho "
+                      "[%dx%d, largada %s]; SEGURE (>=0.7s) para mapear.",
+                 t, t, nomeLado(o.lado));
     }
     while (true) {
         const Botao::Clique c = botao_start.clique();
         if (c == Botao::Clique::Curto) {
-            idx_lab = (idx_lab + 1) % kNumOpcoesLab;
-            const int t = (int)kOpcoesLab[idx_lab].tamanho;
-            ESP_LOGI(TAG, "Tamanho selecionado: %dx%d (goal {%u,%u})", t, t,
-                     (unsigned)kOpcoesLab[idx_lab].goal.x,
-                     (unsigned)kOpcoesLab[idx_lab].goal.y);
+            idx_lab = (idx_lab + 1) % kNumOpcoesLargada;
+            const OpcaoLargada &o = kOpcoesLargada[idx_lab];
+            const int t = (int)o.tamanho;
+            const Labirinto::Posicao ini = celulaLargada(o);
+            ESP_LOGI(TAG, "Selecao: %dx%d, largada %s {%u,%u}", t, t,
+                     nomeLado(o.lado), (unsigned)ini.x, (unsigned)ini.y);
         } else if (c == Botao::Clique::Longo) {
-            const int t = (int)kOpcoesLab[idx_lab].tamanho;
-            ESP_LOGI(TAG, "Largada confirmada (%dx%d): iniciando mapeamento.", t, t);
+            const OpcaoLargada &o = kOpcoesLargada[idx_lab];
+            const int t = (int)o.tamanho;
+            ESP_LOGI(TAG, "Largada confirmada (%dx%d, %s): iniciando mapeamento.",
+                     t, t, nomeLado(o.lado));
             break;
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    // 6.1) Labirinto (flood-fill) com o tamanho/goal escolhidos.
-    const Labirinto::Posicao GOAL = kOpcoesLab[idx_lab].goal;
-    g_dimensao = (int)kOpcoesLab[idx_lab].tamanho;
-    g_maze.configurar(kOpcoesLab[idx_lab].tamanho);
+    // 6.1) Labirinto (flood-fill) com o lado/tamanho/goal escolhidos. A largada
+    //      varia so na CELULA (lado oeste/leste); o heading e sempre Norte
+    //      (a frente do robo na largada = Norte do modelo).
+    const OpcaoLargada opc = kOpcoesLargada[idx_lab];
+    const Labirinto::Posicao START = celulaLargada(opc);
+    const Labirinto::Posicao GOAL  = opc.goal;
+    g_dimensao = (int)opc.tamanho;
+    g_maze.configurar(opc.tamanho);
     Labirinto::InterfaceRobo robo;
     robo.virarPara = virarPara;
     robo.avancar   = avancar;
     g_maze.configurarRobo(robo);
     g_maze.iniciar(START, GOAL);
-    g_heading = Labirinto::Direcao::Norte; // frente fisica = Norte na largada
-    ESP_LOGI(TAG, "Labirinto %dx%d | inicio {%u,%u} | objetivo {%u,%u}",
-             (int)g_maze.tamanho(), (int)g_maze.tamanho(),
+    g_heading = Labirinto::Direcao::Norte; // frente fisica na largada = Norte
+    ESP_LOGI(TAG, "Labirinto %dx%d | largada %s {%u,%u} | objetivo {%u,%u}",
+             (int)g_maze.tamanho(), (int)g_maze.tamanho(), nomeLado(opc.lado),
              (unsigned)START.x, (unsigned)START.y, (unsigned)GOAL.x, (unsigned)GOAL.y);
 
     // 7) Calibracao do gyro logo apos o botao (robo PARADO na largada).
@@ -1099,8 +1122,10 @@ extern "C" void app_main(void) {
     // 9) FAST RUN manual: reposicione o robo na LARGADA apontando para o NORTE
     //    e aperte o botao 1. O mapa aprendido e mantido (prepararFastRun).
     if (mapeou && !abortou) {
-        ESP_LOGI(TAG, "Reposicione o robo na largada {0,0} apontando para o NORTE "
-                      "e aperte o botao 1 (D19) para a corrida rapida.");
+        ESP_LOGI(TAG, "Reposicione o robo na largada %s {%u,%u} apontando para o "
+                      "NORTE (a mesma frente da largada) e aperte o botao (D19) "
+                      "para a corrida rapida.",
+                 nomeLado(opc.lado), (unsigned)START.x, (unsigned)START.y);
         while (!botao_start.clicado()) vTaskDelay(pdMS_TO_TICKS(10));
 
         g_maze.prepararFastRun();               // pos=inicio, heading=Norte, mapa intacto
