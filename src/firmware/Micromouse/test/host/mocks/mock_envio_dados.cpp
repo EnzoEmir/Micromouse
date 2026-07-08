@@ -15,9 +15,11 @@ static void record(int tipo, int64_t ts) {
     if (tipo >= 0 && tipo < 8) g_log.count_by_tipo[tipo]++;
 }
 
-esp_err_t enviar_configuracao_inicial(const char*, int64_t ts, int dimensao, int bateria) {
+esp_err_t enviar_configuracao_inicial(const char*, int64_t ts, int dimensao,
+                                      const char* lado_largada, int bateria) {
     record(0, ts);
     g_log.last_dimensao = dimensao;
+    g_log.last_lado_largada = lado_largada;
     g_log.last_bateria = bateria;
     return g_result;
 }

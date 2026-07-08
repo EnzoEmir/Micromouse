@@ -15,6 +15,7 @@ struct EnvioLog {
     int count_by_tipo[8];
     // Captured fields from the most recent call (union-ish, only relevant ones set).
     int last_dimensao;
+    const char* last_lado_largada;  // config packet (tipo 0): "esquerda"/"direita"
     int last_bateria;
     int last_x, last_y;
     uint8_t last_w;

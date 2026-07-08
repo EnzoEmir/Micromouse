@@ -219,6 +219,10 @@ inline Labirinto::Posicao celulaLargada(const OpcaoLargada &o) {
 inline const char *nomeLado(LadoLargada l) {
     return (l == LadoLargada::Oeste) ? "ESQUERDA (Oeste)" : "DIREITA (Leste)";
 }
+// Valor do lado da largada para o JSON de telemetria (pacote tipo 0).
+inline const char *ladoJson(LadoLargada l) {
+    return (l == LadoLargada::Oeste) ? "esquerda" : "direita";
+}
 
 // --- Telemetria / Wi-Fi (envio para o servidor web) ---
 // >>> PREENCHER NO DIA DA COMPETICAO: SSID/senha do hotspot e IP do servidor <<<
@@ -253,6 +257,7 @@ volatile float g_temp_c       = 25.0f; // cache da temperatura do MPU (C)
 volatile bool  g_temp_critica = false; // ficou acima do limiar critico
 volatile bool  g_config_enviada = false; // pacote 0 (config) ja foi enviado
 volatile int   g_dimensao     = 4;     // tamanho escolhido (p/ config atrasada)
+const char*    g_lado_json    = "esquerda"; // lado da largada p/ config (tipo 0)
 int     g_fastrun_tiles = 0;           // tiles andados durante a corrida rapida
 int64_t g_fastrun_t0_ms = 0;           // inicio da corrida rapida (ms)
 
@@ -551,7 +556,7 @@ void tarefa_heartbeat(void*) {
             if (!g_config_enviada) {
                 g_config_enviada = true;
                 enviar_configuracao_inicial(BACKEND_URL, telemetria_ts(),
-                                            g_dimensao, g_bateria_pct);
+                                            g_dimensao, g_lado_json, g_bateria_pct);
             }
             enviar_heartbeat(BACKEND_URL, telemetria_ts(), g_bateria_pct);
         }
@@ -1070,6 +1075,7 @@ extern "C" void app_main(void) {
     const Labirinto::Posicao START = celulaLargada(opc);
     const Labirinto::Posicao GOAL  = opc.goal;
     g_dimensao = (int)opc.tamanho;
+    g_lado_json = ladoJson(opc.lado);   // p/ o pacote de config (tipo 0)
     g_maze.configurar(opc.tamanho);
     Labirinto::InterfaceRobo robo;
     robo.virarPara = virarPara;
@@ -1093,7 +1099,7 @@ extern "C" void app_main(void) {
     if (wifi_is_connected()) {
         g_config_enviada = true;
         enviar_configuracao_inicial(BACKEND_URL, telemetria_ts(),
-                                    g_dimensao, g_bateria_pct); // tipo 0
+                                    g_dimensao, g_lado_json, g_bateria_pct); // tipo 0
     }
     xTaskCreate(tarefa_heartbeat, "heartbeat", 4096, nullptr, 3, nullptr); // tipo 4
 

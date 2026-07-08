@@ -71,10 +71,13 @@ static cJSON* novo_pacote(TipoPacote tipo, int64_t timestamp_ms) {
 }
 
 esp_err_t enviar_configuracao_inicial(const char* url, int64_t timestamp_ms,
-                                      int dimensao, int bateria) {
+                                      int dimensao, const char* lado_largada,
+                                      int bateria) {
     cJSON* raiz = novo_pacote(TipoPacote::ConfiguracaoInicial, timestamp_ms);
     if (raiz != nullptr) {
         cJSON_AddNumberToObject(raiz, "dimensao", dimensao);
+        cJSON_AddStringToObject(raiz, "lado_largada",
+                                lado_largada ? lado_largada : "esquerda");
         cJSON_AddNumberToObject(raiz, "bateria", bateria);
     }
     return enviar_json(url, raiz);

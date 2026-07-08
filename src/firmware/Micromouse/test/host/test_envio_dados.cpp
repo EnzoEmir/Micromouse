@@ -20,9 +20,14 @@ static double numField(cJSON* o, const char* k) {
     return (it && cJSON_IsNumber(it)) ? it->valuedouble : -99999.0;
 }
 
+static std::string strField(cJSON* o, const char* k) {
+    cJSON* it = cJSON_GetObjectItem(o, k);
+    return (it && cJSON_IsString(it)) ? std::string(it->valuestring) : std::string("<none>");
+}
+
 TEST_CASE(configuracao_inicial_packet) {
     mock_http_reset();
-    esp_err_t r = enviar_configuracao_inicial(URL, 0, 16, 87);
+    esp_err_t r = enviar_configuracao_inicial(URL, 0, 16, "direita", 87);
     CHECK_EQ(r, ESP_OK);
     CHECK_EQ(mock_http_post_count(), 1);
     CHECK_EQ(std::string(mock_http_last_url()), std::string(URL));
@@ -32,6 +37,7 @@ TEST_CASE(configuracao_inicial_packet) {
     CHECK_EQ((int)numField(j, "tipo"), 0);
     CHECK_EQ((int)numField(j, "timestamp_ms"), 0);
     CHECK_EQ((int)numField(j, "dimensao"), 16);
+    CHECK_EQ(strField(j, "lado_largada"), std::string("direita"));
     CHECK_EQ((int)numField(j, "bateria"), 87);
     cJSON_Delete(j);
 }
