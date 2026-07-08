@@ -89,11 +89,19 @@ constexpr int   HOLD_MAX_MISS     = 6;      // ciclos p/ segurar ultima leitura 
 
 // --- Distancia de 1 CELULA (encoders, PCNT quadratura x4) ---
 // ~57 pulsos/cm. Calibrado entre 950 (parava curto) e 1065 (passava) -> 1010.
-constexpr long    COUNTS_PER_TILE = 995;
+constexpr long    COUNTS_PER_TILE = 1010;
 constexpr float   FRENTE_LIVRE_MM = 120.0f;   // df acima disso = frente ABERTA (sem parede)
 constexpr int64_t TILE_TIMEOUT_US = 5000000;  // trava de seguranca por tile (5 s)
 // Perto do fim do tile, cai de PWM_FAST p/ PWM_DRIVE (mesmo coast da calibracao).
 constexpr long    DECEL_COUNTS    = 350;
+// Aproximacao final PRECISA: nos ultimos APPROACH_COUNTS pulsos, larga os ToFs
+// (lentos) e checa SO o encoder num loop rapido (2 ms) ate o alvo, mantendo reto
+// pelo gyro, e freia. Sem isso o loop lento (~4 Hz) so ve a contagem tarde e o
+// robo PASSA do tile -- erro que ACUMULA e faz o sensor lateral ver a parede do
+// tile seguinte. APPROACH_COUNTS deve ser MAIOR que o avanco por volta do loop
+// (~230 pulsos a 22%), senao a janela nao pega. FREIO_MS = duracao do freio.
+constexpr long    APPROACH_COUNTS = 280;
+constexpr int     FREIO_MS        = 40;
 
 // --- Centralizacao durante o avanco (ToF = posicao, gyro = amortecimento) ---
 // corr>0 => acelera esquerda / freia direita => yaw p/ direita.
@@ -387,6 +395,15 @@ void motores_para() {
     gpio_set_level(MOTOR_RIGHT_IN1_PIN, 0);
     gpio_set_level(MOTOR_RIGHT_IN2_PIN, 0);
 }
+// Freio ativo (short brake do TB6612): IN1=IN2=1 nos dois motores, PWM alto.
+// Mata a inercia (coast) para o robo parar mais preciso no fim do tile.
+void motores_freio() {
+    gpio_set_level(MOTOR_LEFT_IN1_PIN, 1);
+    gpio_set_level(MOTOR_LEFT_IN2_PIN, 1);
+    gpio_set_level(MOTOR_RIGHT_IN1_PIN, 1);
+    gpio_set_level(MOTOR_RIGHT_IN2_PIN, 1);
+    pwm_left(PWM_MAX); pwm_right(PWM_MAX);
+}
 void initMotores() {
     gpio_config_t cfg = {};
     cfg.mode = GPIO_MODE_OUTPUT;
@@ -649,11 +666,51 @@ Avanco andarUmTile(int n_tiles = 1, float parar_frente_mm = -1.0f) {
             confirmados = 0;
         }
 
-        // (b) Completou o(s) tile(s) pela contagem de pulsos.
-        if (media >= alvo) {
+        // (b) Contagem de pulsos. No dash, o teto de contagem e so seguranca
+        // (a parada real e a parede frontal). No modo NORMAL, quando falta pouco
+        // entra na APROXIMACAO FINAL precisa: sem ToF (lento), so encoder num loop
+        // rapido ate o alvo + gyro p/ reto + freio. Isso impede o robo de PASSAR
+        // do tile por causa do loop lento (erro que acumulava).
+        if (para_frente) {
+            if (media >= alvo) {
+                motores_para();
+                ESP_LOGI(TAG, "<< Tile OK (cap): encL=%ld encR=%ld media=%ld", cl, cr, media);
+                return Avanco::TILE_OK;
+            }
+        } else if (media >= alvo - APPROACH_COUNTS) {
+            dir_frente();
+            float   ang = 0.0f;                 // rumo integrado na aproximacao
+            int64_t tg  = esp_timer_get_time();
+            const int64_t ta = tg;
+            while (true) {
+                const long a  = std::labs(enc_left());
+                const long b  = std::labs(enc_right());
+                const long mx = std::max(a, b), mn = std::min(a, b);
+                const long m  = (mx > 150 && mn < (mx * 3) / 5) ? mx : (a + b) / 2;
+                if (m >= alvo) break;
+                if (esp_timer_get_time() - ta > 1500000) break; // seguranca 1.5 s
+                // Gyro segura o rumo reto no trecho final (sem ToF).
+                float gz = 0.0f;
+                if (g_mpu_ok) ler_gz_dps(&gz);
+                const int64_t ng = esp_timer_get_time();
+                float dtg = (ng - tg) / 1e6f;
+                if (dtg <= 0.0f) dtg = 1e-3f;
+                if (dtg > 0.1f)  dtg = 0.1f;
+                tg = ng;
+                ang += gz * dtg;
+                float c = -KP_HEADING * (GYRO_SIGN_RIGHT * ang);
+                if (c >  CORR_MAX) c =  CORR_MAX;
+                if (c < -CORR_MAX) c = -CORR_MAX;
+                int dl2 = std::max(0, std::min(PWM_MAX, (int)(PWM_DRIVE * TRIM_L) + (int)c));
+                int dr2 = std::max(0, std::min(PWM_MAX, (int)(PWM_DRIVE * TRIM_R) - (int)c));
+                pwm_left(dl2); pwm_right(dr2);
+                vTaskDelay(pdMS_TO_TICKS(2)); // loop RAPIDO (sem ToF) = parada precisa
+            }
+            motores_freio();
+            vTaskDelay(pdMS_TO_TICKS(FREIO_MS));
             motores_para();
-            ESP_LOGI(TAG, "<< Tile OK: encL=%ld encR=%ld media=%ld (dif L/R=%ld)",
-                     cl, cr, media, cr - cl);
+            ESP_LOGI(TAG, "<< Tile OK: encL=%ld encR=%ld (aprox+freio)",
+                     enc_left(), enc_right());
             return Avanco::TILE_OK;
         }
 
