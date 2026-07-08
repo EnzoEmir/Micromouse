@@ -247,12 +247,20 @@ Labirinto::Posicao Labirinto::celulaIncertaMaisProxima() {
 }
 
 uint16_t Labirinto::rotaOtima(Posicao *buffer, uint16_t capacidade) {
-    floodFill(objetivo_);
-    Posicao tmp[kMaxSize * kMaxSize];
-    uint8_t n = 0;
-    coletarCaminhoOtimo(tmp, n);
+    floodFillCentro();
+    const Direcao heading_salvo = heading_;
+    heading_ = Direcao::Norte;                 // fast run comeca apontando p/ o Norte
     uint16_t out = 0;
-    for (uint8_t i = 0; i < n && out < capacidade; ++i) buffer[out++] = tmp[i];
+    Posicao a = inicio_;
+    while (out < capacidade) {
+        buffer[out++] = a;
+        if (ehCelulaCentro(a)) break;          // chegou ao centro = fim da fast run
+        const Direcao d = direcaoDeMenorDist(a);
+        if (d == Direcao::Nenhuma) break;      // sem descida (mapa nao leva ao centro)
+        a = vizinho(a, d);
+        heading_ = d;                          // acompanha o giro (mesmo desempate)
+    }
+    heading_ = heading_salvo;
     return out;
 }
 
@@ -305,6 +313,7 @@ void Labirinto::floodFillCentro() {
     uint16_t head = 0;
     uint16_t tail = 0;
     for (uint8_t i = 0; i < nc; ++i) {
+        if (!visitada(cs[i])) continue;
         dist_[cs[i].y][cs[i].x] = 0;
         fila[tail++] = cs[i];
     }
@@ -316,6 +325,7 @@ void Labirinto::floodFillCentro() {
         for (uint8_t i = 0; i < 4; ++i) {
             if (temParede(a, dirs[i])) continue;
             const Posicao v = vizinho(a, dirs[i]);
+            if (!visitada(v)) continue;
             if (dist_[v.y][v.x] > nd) {
                 dist_[v.y][v.x] = nd;
                 fila[tail++] = v;

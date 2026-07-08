@@ -89,7 +89,7 @@ constexpr int   HOLD_MAX_MISS     = 6;      // ciclos p/ segurar ultima leitura 
 
 // --- Distancia de 1 CELULA (encoders, PCNT quadratura x4) ---
 // ~57 pulsos/cm. Calibrado entre 950 (parava curto) e 1065 (passava) -> 1010.
-constexpr long    COUNTS_PER_TILE = 950;
+constexpr long    COUNTS_PER_TILE = 995;
 constexpr float   FRENTE_LIVRE_MM = 120.0f;   // df acima disso = frente ABERTA (sem parede)
 constexpr int64_t TILE_TIMEOUT_US = 5000000;  // trava de seguranca por tile (5 s)
 // Perto do fim do tile, cai de PWM_FAST p/ PWM_DRIVE (mesmo coast da calibracao).
