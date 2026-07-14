@@ -72,6 +72,9 @@ class PacoteInicial(BaseModel):
     tipo: int = Field(0)
     timestamp_ms: int = Field(ge=0)
     dimensao: int
+    # Lado em que o mapeamento começa: "esquerda" (canto oeste) ou "direita"
+    # (canto leste). Opcional para compatibilidade com firmware antigo.
+    lado_largada: str | None = None
     bateria: int = Field(ge=0, le=100)
 
 

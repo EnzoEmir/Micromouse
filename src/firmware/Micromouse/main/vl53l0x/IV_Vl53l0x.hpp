@@ -27,6 +27,10 @@ public:
         gpio_num_t xshut_pin         = GPIO_NUM_NC;
         uint32_t   i2c_speed_hz      = I2C_MANAGER_DEFAULT_SPEED_HZ;
         uint32_t   timing_budget_ms  = 20;
+        // Limite minimo de sinal de retorno (MCPS). Maior = rejeita leituras
+        // fracas (menos flyers) mas encurta o alcance; menor = ve mais longe
+        // mas com mais ruido. Default 0.25 (padrao ST).
+        float      signal_rate_limit_mcps = 0.25f;
         espp::Logger::Verbosity log_level = espp::Logger::Verbosity::INFO;
     };
 

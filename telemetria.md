@@ -23,6 +23,7 @@ Envia o tamanho do labirinto e o número da tentativa para preparar a interface 
   "tipo": 0,
   "timestamp_ms": 0,
   "dimensao": 4,
+  "lado_largada": "esquerda",
   "bateria": 100
 }
 ```
@@ -30,6 +31,7 @@ Envia o tamanho do labirinto e o número da tentativa para preparar a interface 
 - tipo (int): Identificador do tipo de pacote (0 = Configuração Inicial).
 - timestamp_ms (int): Timestamp relativo ao inicio da corrida, em milissegundos.
 - dimensao (int): Tamanho do labirinto atual. Enviar 4 para 4x4, 8 para 8x8 ou 16 para 16x16.
+- lado_largada (string): Lado em que o mapeamento começa, `"esquerda"` (canto oeste, x=0) ou `"direita"` (canto leste, x=n-1). A frente do robô na largada é sempre o Norte do modelo.
 - bateria (int): Porcentagem estimada restante da bateria no inicio do teste (de 0 a 100).
 
 ## Convenção Espacial e de Coordenadas 

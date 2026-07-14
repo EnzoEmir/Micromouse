@@ -33,6 +33,8 @@ TEST_CASE(inicializar_connects_and_sends_config) {
     const EnvioLog* log = mock_envio_get_log();
     CHECK_EQ(log->count_by_tipo[0], 1);   // ConfiguracaoInicial
     CHECK_EQ(log->last_dimensao, 16);
+    // Labirinto padrao comeca em {0,0} (canto oeste) -> largada pela esquerda.
+    CHECK_EQ(std::string(log->last_lado_largada), std::string("esquerda"));
     CHECK_EQ(log->last_bateria, 90);
     CHECK_EQ((int)log->last_timestamp_ms, 0);  // clock zeroed at start
 }

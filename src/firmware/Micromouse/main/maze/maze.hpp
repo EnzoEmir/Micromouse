@@ -81,6 +81,12 @@ public:
     // Define largada/objetivo e zera todo o estado de navegacao.
     void iniciar(Posicao inicio, Posicao objetivo);
 
+    // Prepara a corrida rapida MANTENDO o mapa aprendido: reposiciona o robo
+    // na largada (pos_=inicio_, heading_=Norte), entra na fase FastRun e
+    // refloda o objetivo. Use quando o robo for fisicamente recolocado na
+    // largada apos o mapeamento (iniciar() nao serve: apaga o mapa).
+    void prepararFastRun();
+
     // Um passo da maquina de estados; chamar repetidamente ate FastRunCompleto.
     Resultado passo(const LeituraSensores &s);
 
@@ -103,6 +109,14 @@ public:
     // Conveniencia: refloda o objetivo e coleta a rota otima inicio->centro.
     uint16_t rotaOtima(Posicao *buffer, uint16_t capacidade);
 
+    // Bloco objetivo 2x2 no centro do labirinto, derivado do tamanho n_ (para
+    // 4x4 -> {1,2}x{1,2}; 8x8 -> {3,4}x{3,4}). Preenche `out` com as celulas
+    // dentro dos limites e devolve quantas em `n`. O mapeamento so termina apos
+    // visitar TODAS as alcancaveis (confirma que o 2x2 esta aberto e realmente
+    // foi alcancado); a corrida rapida termina ao entrar em QUALQUER uma delas.
+    void celulasCentro(Posicao out[4], uint8_t &n) const;
+    bool ehCelulaCentro(Posicao p) const;
+
     // BFS reversa a partir de `destino`, respeitando SO paredes conhecidas.
     void floodFill(Posicao destino);
 
@@ -119,6 +133,18 @@ public:
     Posicao vizinho(Posicao p, Direcao d) const;
 
     Direcao direcaoDeMenorDist(Posicao p) const;
+
+    // Corrida rapida: comprimento do trecho RETO a partir de pos_ seguindo o
+    // gradiente ate o centro. Preenche `dir_saida` (direcao do trecho) e
+    // `termina_em_parede` (o trecho acaba de frente para uma parede -> curva
+    // forcada; batente confiavel para o ToF frontal). Retorna o numero de tiles
+    // retos (0 se ja no centro / sem descida). Recalcula o flood para o centro.
+    uint8_t retaFastRun(Direcao &dir_saida, bool &termina_em_parede);
+
+    // Corrida rapida: avanca o MODELO (pos_/heading_) n celulas na direcao d,
+    // sem acionar o robo. Usado quando o firmware ja dirigiu o trecho reto
+    // inteiro de uma vez (dash sem parar ate a parede).
+    void avancarModeloFastRun(Direcao d, uint8_t n);
 
 private:
     static constexpr uint8_t kBitVisitada = 1 << 4;
@@ -143,6 +169,16 @@ private:
     void definirParede(Posicao p, Direcao d);
     void marcarVisitada(Posicao p);
     void mover(Direcao d);
+
+    // Flood-fill multi-fonte a partir de todas as celulas do bloco central
+    // (todas com distancia 0): gera o gradiente que leva ao tile do centro mais
+    // proximo. Usado na corrida rapida.
+    void floodFillCentro();
+    // Celula do bloco central ainda NAO visitada e alcancavel mais proxima de
+    // pos_ (kInvalida se todas visitadas ou nenhuma alcancavel).
+    Posicao centroNaoVisitadoMaisProximo();
+    // true se ao menos uma celula do bloco central ja foi visitada.
+    bool algumCentroVisitado() const;
 
     static Direcao oposta(Direcao d);
     static Direcao girarCW(Direcao d);

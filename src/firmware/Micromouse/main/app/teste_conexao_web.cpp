@@ -55,8 +55,8 @@ void enviar_sequencia_mock() {
     };
     constexpr int n = sizeof(caminho) / sizeof(caminho[0]);
 
-    // tipo 0 - Configuracao Inicial (labirinto 4x4, bateria 100%).
-    enviar_configuracao_inicial(BACKEND_URL, timestamp_ms(), 4, 100);
+    // tipo 0 - Configuracao Inicial (labirinto 4x4, largada esquerda, bateria 100%).
+    enviar_configuracao_inicial(BACKEND_URL, timestamp_ms(), 4, "esquerda", 100);
     vTaskDelay(pdMS_TO_TICKS(PAUSA_MS));
 
     // tipo 1 - Movimentacao / Descoberta de Paredes (uma por celula).

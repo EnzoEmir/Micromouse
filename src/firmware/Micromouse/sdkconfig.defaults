@@ -1,0 +1,9 @@
+CONFIG_FREERTOS_HZ=1000
+
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+
+# Tabela de particoes customizada (partitions.csv: factory ~1.94MB). Necessaria
+# porque o binario com Wi-Fi + HTTP + mbedTLS + cJSON passa de 1MB e estoura a
+# particao SINGLE_APP padrao.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

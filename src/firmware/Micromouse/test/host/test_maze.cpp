@@ -266,8 +266,51 @@ TEST_CASE(integration_open_maze_completes) {
     R res = runFullCycle(lab, gt, 5000, &steps);
     CHECK_EQ(res, R::FastRunCompleto);
     CHECK_EQ(lab.fase(), F::Concluido);
-    CHECK(lab.posicao() == (P{4, 4}));
+    // A corrida rapida para no primeiro tile do bloco central que alcancar.
+    CHECK(lab.ehCelulaCentro(lab.posicao()));
     CHECK(steps < 5000);
+}
+
+// A exploracao precisa VISITAR todas as celulas do bloco central 2x2 (garante
+// que o objetivo foi mesmo alcancado e que nao ha parede entre elas) antes de
+// sinalizar AlcancouObjetivo (Req 1).
+TEST_CASE(integration_explore_visits_full_center_block) {
+    Labirinto lab;
+    lab.configurar(Labirinto::Tamanho::k4x4);
+    lab.iniciar(P{0, 0}, P{1, 1});
+
+    GroundTruth gt;
+    gt.clear(4);
+
+    R res = R::EmProgresso;
+    for (int i = 0; i < 2000; ++i) {
+        auto s = gt.ler(lab.posicao(), lab.heading());
+        res = lab.passo(s);
+        if (res == R::AlcancouObjetivo || res == R::Bloqueado) break;
+    }
+    CHECK_EQ(res, R::AlcancouObjetivo);
+
+    P cs[4];
+    uint8_t nc = 0;
+    lab.celulasCentro(cs, nc);
+    CHECK_EQ(nc, (uint8_t)4);
+    for (uint8_t i = 0; i < nc; ++i) CHECK(lab.visitada(cs[i]));
+}
+
+// A corrida rapida para no tile do centro MAIS PROXIMO da largada, nao no canto
+// oposto passado como objetivo (Req 2).
+TEST_CASE(integration_fastrun_stops_at_first_center_cell) {
+    Labirinto lab;
+    lab.configurar(Labirinto::Tamanho::k8x8);
+    lab.iniciar(P{0, 0}, P{4, 4});   // canto mais distante do bloco central
+
+    GroundTruth gt;
+    gt.clear(8);
+
+    R res = runFullCycle(lab, gt, 8000);
+    CHECK_EQ(res, R::FastRunCompleto);
+    CHECK(lab.ehCelulaCentro(lab.posicao()));
+    CHECK(lab.posicao() == (P{3, 3}));   // tile do centro vizinho da largada
 }
 
 TEST_CASE(integration_phase_transitions_in_order) {
@@ -311,7 +354,7 @@ TEST_CASE(integration_maze_with_walls_completes_and_avoids_walls) {
     int steps = 0;
     R res = runFullCycle(lab, gt, 8000, &steps);
     CHECK_EQ(res, R::FastRunCompleto);
-    CHECK(lab.posicao() == (P{4, 4}));
+    CHECK(lab.ehCelulaCentro(lab.posicao()));
 
     // No phantom walls: every interior wall the robot believes in must really
     // exist in the ground-truth maze. (The robot need not have discovered every
@@ -338,17 +381,18 @@ TEST_CASE(integration_unreachable_goal_is_blocked) {
 
     GroundTruth gt;
     gt.clear(8);
-    // Completely wall off the goal cell (4,4) on all four sides.
-    gt.addWall(P{4, 4}, D::Norte);
-    gt.addWall(P{4, 4}, D::Sul);
-    gt.addWall(P{4, 4}, D::Leste);
-    gt.addWall(P{4, 4}, D::Oeste);
+    // O objetivo agora e o bloco central 2x2 inteiro, entao murar so (4,4) nao
+    // basta: sela COMPLETAMENTE as 4 celulas do centro ({3,3},{4,3},{3,4},{4,4}).
+    const P centro[4] = {{3, 3}, {4, 3}, {3, 4}, {4, 4}};
+    const D dirs[4] = {D::Norte, D::Sul, D::Leste, D::Oeste};
+    for (P c : centro)
+        for (D d : dirs) gt.addWall(c, d);
 
     int steps = 0;
     R res = runFullCycle(lab, gt, 8000, &steps);
     CHECK_EQ(res, R::Bloqueado);
-    // It never reached the goal.
-    CHECK(lab.posicao() != (P{4, 4}));
+    // Nunca chegou a nenhuma celula do centro.
+    CHECK(!lab.ehCelulaCentro(lab.posicao()));
 }
 
 // ===========================================================================

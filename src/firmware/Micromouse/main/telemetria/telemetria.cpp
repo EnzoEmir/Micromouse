@@ -35,9 +35,15 @@ void Telemetria::inicializar(const char* ssid, const char* senha,
     // Zera o relógio da corrida: o pacote inicial sai com timestamp_ms ~ 0.
     _inicio_ms = agora_ms();
 
+    // Lado da largada derivado da celula de inicio: x==0 e o canto oeste
+    // (esquerda); qualquer outro x e o canto leste (direita).
+    const char* lado_largada =
+        (labirinto.inicio().x == 0) ? "esquerda" : "direita";
+
     ESP_LOGI(TAG, "Wi-Fi pronto. Enviando configuracao inicial...");
     registrar(enviar_configuracao_inicial(_server_url.c_str(), timestamp_ms(),
-                                          labirinto.tamanho(), bateria));
+                                          labirinto.tamanho(), lado_largada,
+                                          bateria));
 }
 
 esp_err_t Telemetria::movimento(int x, int y, uint8_t paredes) {

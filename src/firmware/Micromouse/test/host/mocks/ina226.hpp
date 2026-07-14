@@ -52,6 +52,16 @@ public:
         return ina226_mock_state().power;
     }
 
+    // Diagnostico: por padrao devolve os IDs de um INA226 genuino (TI/0x2260) e
+    // o shunt derivado da corrente mockada (Vshunt = I * Rshunt).
+    uint16_t manufacturer_id(std::error_code& ec) const { ec.clear(); return 0x5449; }
+    uint16_t die_id(std::error_code& ec) const { ec.clear(); return 0x2260; }
+    float shunt_voltage_volts(std::error_code& ec) const {
+        ec.clear();
+        return ina226_mock_state().current * config_.shunt_resistance_ohms;
+    }
+    bool calibrate(float, float, std::error_code& ec) { ec.clear(); return true; }
+
 private:
     Config config_;
 };

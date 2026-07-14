@@ -39,6 +39,16 @@ void Labirinto::iniciar(Posicao inicio, Posicao objetivo) {
     posSensoriada_ = inicio;
 }
 
+void Labirinto::prepararFastRun() {
+    pos_ = inicio_;
+    heading_ = Direcao::Norte;
+    fase_ = Fase::FastRun;
+    alvoExploracao_ = kInvalida;
+    sensoriou_ = false;
+    posSensoriada_ = inicio_;
+    floodFillCentro();
+}
+
 void Labirinto::resetarMapa() {
     for (uint8_t y = 0; y < kMaxSize; ++y) {
         for (uint8_t x = 0; x < kMaxSize; ++x) {
@@ -237,13 +247,145 @@ Labirinto::Posicao Labirinto::celulaIncertaMaisProxima() {
 }
 
 uint16_t Labirinto::rotaOtima(Posicao *buffer, uint16_t capacidade) {
-    floodFill(objetivo_);
-    Posicao tmp[kMaxSize * kMaxSize];
-    uint8_t n = 0;
-    coletarCaminhoOtimo(tmp, n);
+    floodFillCentro();
+    const Direcao heading_salvo = heading_;
+    heading_ = Direcao::Norte;                 // fast run comeca apontando p/ o Norte
     uint16_t out = 0;
-    for (uint8_t i = 0; i < n && out < capacidade; ++i) buffer[out++] = tmp[i];
+    Posicao a = inicio_;
+    while (out < capacidade) {
+        buffer[out++] = a;
+        if (ehCelulaCentro(a)) break;          // chegou ao centro = fim da fast run
+        const Direcao d = direcaoDeMenorDist(a);
+        if (d == Direcao::Nenhuma) break;      // sem descida (mapa nao leva ao centro)
+        a = vizinho(a, d);
+        heading_ = d;                          // acompanha o giro (mesmo desempate)
+    }
+    heading_ = heading_salvo;
     return out;
+}
+
+void Labirinto::celulasCentro(Posicao out[4], uint8_t &n) const {
+    n = 0;
+    if (n_ < 2) {                 // labirinto minusculo: o "centro" e a celula 0,0
+        out[n++] = {0, 0};
+        return;
+    }
+    const uint8_t a = static_cast<uint8_t>(n_ / 2 - 1);
+    const uint8_t b = static_cast<uint8_t>(n_ / 2);
+    const Posicao cand[4] = {{a, a}, {b, a}, {a, b}, {b, b}};
+    for (uint8_t i = 0; i < 4; ++i) {
+        if (dentroDosLimites(cand[i])) out[n++] = cand[i];
+    }
+}
+
+bool Labirinto::ehCelulaCentro(Posicao p) const {
+    Posicao cs[4];
+    uint8_t nc = 0;
+    celulasCentro(cs, nc);
+    for (uint8_t i = 0; i < nc; ++i) {
+        if (cs[i] == p) return true;
+    }
+    return false;
+}
+
+bool Labirinto::algumCentroVisitado() const {
+    Posicao cs[4];
+    uint8_t nc = 0;
+    celulasCentro(cs, nc);
+    for (uint8_t i = 0; i < nc; ++i) {
+        if (visitada(cs[i])) return true;
+    }
+    return false;
+}
+
+void Labirinto::floodFillCentro() {
+    for (uint8_t y = 0; y < kMaxSize; ++y) {
+        for (uint8_t x = 0; x < kMaxSize; ++x) {
+            dist_[y][x] = kDistanciaInfinita;
+        }
+    }
+
+    Posicao cs[4];
+    uint8_t nc = 0;
+    celulasCentro(cs, nc);
+
+    Posicao fila[kMaxCaminho];
+    uint16_t head = 0;
+    uint16_t tail = 0;
+    for (uint8_t i = 0; i < nc; ++i) {
+        if (!visitada(cs[i])) continue;
+        dist_[cs[i].y][cs[i].x] = 0;
+        fila[tail++] = cs[i];
+    }
+
+    const Direcao dirs[4] = {Direcao::Norte, Direcao::Leste, Direcao::Sul, Direcao::Oeste};
+    while (head < tail) {
+        const Posicao a = fila[head++];
+        const uint16_t nd = dist_[a.y][a.x] + 1;
+        for (uint8_t i = 0; i < 4; ++i) {
+            if (temParede(a, dirs[i])) continue;
+            const Posicao v = vizinho(a, dirs[i]);
+            if (!visitada(v)) continue;
+            if (dist_[v.y][v.x] > nd) {
+                dist_[v.y][v.x] = nd;
+                fila[tail++] = v;
+            }
+        }
+    }
+}
+
+Labirinto::Posicao Labirinto::centroNaoVisitadoMaisProximo() {
+    Posicao cs[4];
+    uint8_t nc = 0;
+    celulasCentro(cs, nc);
+
+    floodFill(pos_);   // distancias a partir da posicao atual (paredes conhecidas)
+
+    Posicao melhor = kInvalida;
+    uint16_t melhorD = kDistanciaInfinita;
+    for (uint8_t i = 0; i < nc; ++i) {
+        if (visitada(cs[i])) continue;
+        const uint16_t d = dist_[cs[i].y][cs[i].x];
+        if (d < melhorD) {
+            melhorD = d;
+            melhor = cs[i];
+        }
+    }
+    return melhor;
+}
+
+uint8_t Labirinto::retaFastRun(Direcao &dir_saida, bool &termina_em_parede) {
+    dir_saida = Direcao::Nenhuma;
+    termina_em_parede = false;
+    if (fase_ != Fase::FastRun) return 0;
+
+    floodFillCentro();
+    const Direcao d0 = direcaoDeMenorDist(pos_);
+    if (d0 == Direcao::Nenhuma) return 0;   // ja no centro (sem descida de gradiente)
+    dir_saida = d0;
+
+    // Anda o gradiente enquanto a direcao otima continuar sendo d0 (trecho reto).
+    Posicao p = pos_;
+    uint8_t count = 0;
+    while (true) {
+        if (direcaoDeMenorDist(p) != d0) break; // a rota curva aqui (ou chegou ao centro)
+        p = vizinho(p, d0);
+        ++count;
+        if (ehCelulaCentro(p)) break;           // trecho reto entra direto no centro
+    }
+    // Trecho "termina em parede" = ha parede a frente na celula final -> a curva
+    // seguinte e forcada pela parede, entao o ToF frontal e um batente confiavel.
+    termina_em_parede = temParede(p, d0);
+    return count;
+}
+
+void Labirinto::avancarModeloFastRun(Direcao d, uint8_t n) {
+    heading_ = d;
+    for (uint8_t i = 0; i < n; ++i) {
+        const Posicao v = vizinho(pos_, d);
+        if (!dentroDosLimites(v)) break;
+        pos_ = v;
+    }
 }
 
 void Labirinto::mover(Direcao d) {
@@ -264,13 +406,21 @@ Labirinto::Resultado Labirinto::passo(const LeituraSensores &s) {
 
     switch (fase_) {
         case Fase::ExplorarAteObjetivo: {
-            floodFill(objetivo_);
-            if (pos_ == objetivo_) {
-                fase_ = Fase::RefinarCaminho;
+            // O objetivo e o bloco central 2x2 INTEIRO: percorre todas as
+            // celulas do centro alcancaveis (confirmando que estao abertas e que
+            // o robo realmente chegou) antes de declarar AlcancouObjetivo.
+            const Posicao alvo = centroNaoVisitadoMaisProximo();
+            if (alvo == kInvalida) {
+                // Nenhuma celula do centro nao-visitada e alcancavel.
+                if (!algumCentroVisitado()) {
+                    return Resultado::Bloqueado;   // centro inteiro inalcancavel
+                }
+                fase_ = Fase::RefinarCaminho;      // todas as alcancaveis visitadas
                 alvoExploracao_ = kInvalida;
                 return Resultado::AlcancouObjetivo;
             }
-            const Direcao d = proximaDirecaoFlood();
+            floodFill(alvo);
+            const Direcao d = direcaoDeMenorDist(pos_);
             if (d == Direcao::Nenhuma) return Resultado::Bloqueado;
             mover(d);
             return Resultado::EmProgresso;
@@ -305,7 +455,7 @@ Labirinto::Resultado Labirinto::passo(const LeituraSensores &s) {
         case Fase::RetornarAoInicio: {
             floodFill(inicio_);
             if (pos_ == inicio_) {
-                floodFill(objetivo_);
+                floodFillCentro();
                 fase_ = Fase::FastRun;
                 return Resultado::RetornouAoInicio;
             }
@@ -316,10 +466,13 @@ Labirinto::Resultado Labirinto::passo(const LeituraSensores &s) {
         }
 
         case Fase::FastRun: {
-            if (pos_ == objetivo_) {
+            // Corre para o tile do centro mais proximo e PARA no primeiro deles
+            // que alcancar (nao precisa varrer o 2x2 na corrida rapida).
+            if (ehCelulaCentro(pos_)) {
                 fase_ = Fase::Concluido;
                 return Resultado::FastRunCompleto;
             }
+            floodFillCentro();
             const Direcao d = direcaoDeMenorDist(pos_);
             if (d == Direcao::Nenhuma) return Resultado::Bloqueado;
             mover(d);

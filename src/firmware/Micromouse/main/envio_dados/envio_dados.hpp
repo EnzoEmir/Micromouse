@@ -24,15 +24,17 @@ enum class TipoPacote : int {
 /**
  * @brief Pacote 0 — Configuração Inicial.
  *
- * { "tipo":0, "timestamp_ms":..., "dimensao":..., "bateria":... }
+ * { "tipo":0, "timestamp_ms":..., "dimensao":..., "lado_largada":..., "bateria":... }
  *
  * @param url          Endereço completo da API backend.
  * @param timestamp_ms Tempo relativo ao início da corrida (ms).
  * @param dimensao     Tamanho do labirinto (4, 8 ou 16).
+ * @param lado_largada Lado em que o mapeamento começa: "esquerda" ou "direita".
  * @param bateria      Porcentagem estimada de bateria no início (0 a 100).
  */
 esp_err_t enviar_configuracao_inicial(const char* url, int64_t timestamp_ms,
-                                      int dimensao, int bateria);
+                                      int dimensao, const char* lado_largada,
+                                      int bateria);
 
 /**
  * @brief Pacote 1 — Movimentação / Descoberta de Paredes.

@@ -35,7 +35,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
     }
 }
 
-void wifi_init_sta(const char* ssid, const char* password)
+void wifi_init_sta(const char* ssid, const char* password, int timeout_ms)
 {
     s_wifi_event_group = xEventGroupCreate();
 
@@ -68,13 +68,22 @@ void wifi_init_sta(const char* ssid, const char* password)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "wifi_init_sta finalizado. Aguardando conexao...");
+    ESP_LOGI(TAG, "wifi_init_sta finalizado. Conectando em background...");
 
-    xEventGroupWaitBits(s_wifi_event_group,
-            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-            pdFALSE,
-            pdFALSE,
-            portMAX_DELAY);
+    // Espera limitada (opcional) pela primeira conexao. Sem AP no ar, o boot
+    // segue mesmo assim: a reconexao continua em background via event_handler
+    // e wifi_is_connected() passa a valer quando o IP chegar.
+    if (timeout_ms > 0) {
+        xEventGroupWaitBits(s_wifi_event_group,
+                WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                pdFALSE,
+                pdFALSE,
+                pdMS_TO_TICKS(timeout_ms));
+        if (!wifi_conectado_flag) {
+            ESP_LOGW(TAG, "Sem conexao apos %d ms; seguindo sem Wi-Fi "
+                          "(reconexao continua em background).", timeout_ms);
+        }
+    }
 }
 
 bool wifi_is_connected(void) {
